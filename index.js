@@ -32,6 +32,8 @@ const WS4KP_LOCAL_FORECAST = process.env.WS4KP_LOCAL_FORECAST || true;
 const WS4KP_EXTENDED_FORECAST = process.env.WS4KP_EXTENDED_FORECAST || true;
 const WS4KP_ALMANAC = process.env.WS4KP_ALMANAC || false;
 const WS4KP_RADAR = process.env.WS4KP_RADAR || true;
+const WS4KP_SERVER_MUSIC = String(process.env.WS4KP_SERVER_MUSIC || 'false').toLowerCase() === 'true';
+const PIPEWIRE_AUDIO_SOURCE = process.env.PIPEWIRE_AUDIO_SOURCE || 'default';
 const WS4KP_URL = `http://${WS4KP_HOST}:${WS4KP_PORT}?radar=${WS4KP_RADAR}&almanac=${WS4KP_ALMANAC}&extended-forecast=${WS4KP_EXTENDED_FORECAST}&local-forecast=${WS4KP_LOCAL_FORECAST}&regional-forecast=${WS4KP_REGIONAL_FORECAST}&travel=${WS4KP_TRAVEL}&hourly-graph=${WS4KP_HOURLY_GRAPH}&hourly=${WS4KP_HOURLY}&latest-observations=${WS4KP_LATEST_OBSERVATIONS}&current-weather=${WS4KP_CURRENT_WEATHER}&scanLines=${WS4KP_SCANLINES}&spc-outlook=false`;
 const PERMALINK_URL = process.env.PERMALINK_URL || null;
 const HLS_SETUP_DELAY = 2000;
@@ -67,25 +69,25 @@ const VIEW_MODE = validViewModes.includes(desiredViewMode) ? desiredViewMode : '
 
 // set up the width and height constants via immediately invoked function
 const VIEW_DIMENSIONS = (()=>{
-	switch(VIEW_MODE) {
-		case 'standard':
-			return {
-				width: 640,
-				height: 480,
-			}
-		case 'portrait-enhanced':
-			return {
-				width: 720,
-				height: 1280,
-			}
-		case 'wide':
-		case 'wide-enhanced':
-		default:
-			return {
-				width: 1280,
-				height: 720,
-			}
-	}
+  switch(VIEW_MODE) {
+    case 'standard':
+      return {
+        width: 640,
+        height: 480,
+      }
+    case 'portrait-enhanced':
+      return {
+        width: 720,
+        height: 1280,
+      }
+    case 'wide':
+    case 'wide-enhanced':
+    default:
+      return {
+        width: 1280,
+        height: 720,
+      }
+  }
 })();
 
 [OUTPUT_DIR, AUDIO_DIR, LOGO_DIR].forEach(dir => { if (!fs.existsSync(dir)) fs.mkdirSync(dir); });
@@ -153,7 +155,12 @@ function getContainerLimits() {
 }
 
 function createAudioInputFile() {
-  const defaultMp3s = [
+    if (WS4KP_SERVER_MUSIC) {
+      logTS('WS4KP_SERVER_MUSIC=true: skipping MP3 playlist generation; using PipeWire input');
+      return;
+    }
+
+    const defaultMp3s = [
     '01 Weatherscan Track 26.mp3','02 Weatherscan Track 3.mp3','03 Tropical Breeze.mp3',
     '04 Late Nite Cafe.mp3','05 Care Free.mp3','06 Weatherscan Track 14.mp3','07 Weatherscan Track 18.mp3'
   ];
@@ -171,7 +178,7 @@ function createAudioInputFile() {
     console.warn('Using default music list due to error');
     files = defaultMp3s;
   }
-  
+
   // Shuffle if requested
   if (process.env.SHUFFLE_MUSIC?.toLowerCase() === 'true') {
     files = shuffleArray(files);
@@ -420,47 +427,61 @@ async function startTranscoding() {
   lastProgress = null;
   lastProgressAt = null;
 
-  ffmpegProc = ffmpeg()
+  const ffmpegInput = ffmpeg()
     .input(xvfb._display+'.0')
     .inputOptions([
       '-f x11grab',
       `-framerate ${FRAME_RATE}`
-    ])
+    ]);
+
+  if (WS4KP_SERVER_MUSIC) {
+    logTS(`Using PipeWire audio source "${PIPEWIRE_AUDIO_SOURCE}" for music input`);
+    ffmpegInput
+      .input(PIPEWIRE_AUDIO_SOURCE)
+      .inputOptions([
+        '-f pipewire',
+        '-thread_queue_size 4096'
+      ]);
+  } else {
+    ffmpetInput
     .input(path.join(__dirname,'audio_list.txt'))
     .inputOptions([
       '-f concat',
       '-safe 0',
-	  '-stream_loop -1'
-    ])
+      '-stream_loop -1'
+    ]);
+  }
+
+  ffmpegProc = ffmpegInput
     .complexFilter([
       `[0:v]scale=${VIEW_DIMENSIONS.width}:${VIEW_DIMENSIONS.height}[v]`,
       '[1:a]aresample=48000,volume=0.5[a]'
     ])
     .outputOptions([
-	'-map [v]',
-	'-map [a]',
+    '-map [v]',
+    '-map [a]',
     '-c:v libx264',
-	'-preset veryfast',
-	'-c:a aac',
-	'-b:a 128k',
-	'-rc_mode 2',
-	`-g ${FRAME_RATE * HLS_SEGMENT_SECONDS}`,
-	`-b:v ${KBPS_BITRATE}`,
-	'-f hls',
-	`-hls_time ${HLS_SEGMENT_SECONDS}`,
-	'-hls_list_size 6',
-	'-hls_flags delete_segments'
+    '-preset veryfast',
+    '-c:a aac',
+    '-b:a 128k',
+    '-rc_mode 2',
+    `-g ${FRAME_RATE * HLS_SEGMENT_SECONDS}`,
+    `-b:v ${KBPS_BITRATE}`,
+    '-f hls',
+    `-hls_time ${HLS_SEGMENT_SECONDS}`,
+    '-hls_list_size 6',
+    '-hls_flags delete_segments'
     ])
-	.output(HLS_FILE)
+    .output(HLS_FILE)
     .on('start',(cmd)=>{
-		logTS(`Started FFmpeg - Version ${VERSION}`);
-		logTS(`FFmpeg command: ${cmd}`);
-		setTimeout(()=>{
+        logTS(`Started FFmpeg - Version ${VERSION}`);
+        logTS(`FFmpeg command: ${cmd}`);
+        setTimeout(()=>{
           isStreamReady = true;
           isCapturing = true;
           captureStartedAt = Date.now();
         },HLS_SETUP_DELAY);
-	})
+    })
     .on('stderr', line => {
       stderrBuffer.push(line);
       if (stderrBuffer.length > STDERR_BUFFER_LINES) stderrBuffer.shift();
