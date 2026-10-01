@@ -39,7 +39,8 @@ const PERMALINK_URL = process.env.PERMALINK_URL || null;
 const HLS_SETUP_DELAY = 2000;
 const KBPS_BITRATE = process.env.KBPS_BITRATE || '1000';
 const FRAME_RATE = Number(process.env.FRAME_RATE) || 15;
-const RESTREAM_AUDIO = Number(process.env.RESTREAM_AUDIO) || false;
+const SHUFFLE_MUSIC = Number(process.env.SHUFFLE_MUSIC) || false;
+const RESTREAM_MUSIC = Number(process.env.RESTREAM_AUDIO) || false;
 const HLS_SEGMENT_SECONDS = 2;
 const sleep = (waitTimeInMs) => new Promise(resolve => setTimeout(resolve, waitTimeInMs));
 
@@ -176,9 +177,15 @@ function createAudioInputFile() {
   }
   
   // Shuffle if requested
-  if (process.env.SHUFFLE_MUSIC?.toLowerCase() === 'true') {
+  if (SHUFFLE_MUSIC) {
     files = shuffleArray(files);
     console.log('Shuffled music list based on SHUFFLE_MUSIC=true');
+  }
+
+  // Restream music if requested
+  if (RESTREAM_MUSIC) {
+    files = shuffleArray(files);
+    console.log('Shuffled music list based on RESTREAM_MUSIC=true');
   }
 
   console.log(`Loaded ${files.length} music files`);
