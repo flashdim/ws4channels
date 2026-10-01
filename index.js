@@ -110,7 +110,7 @@ let songTitlePollingInterval = null;
 let isStreamReady = false;
 let xvfb = null;
 let lastLoggedTime = null;
-let songNowPlaying = '';
+let songNowPlaying = 'Starting stream...';
 
 // --- State for backpressure + overlap protection + restart diagnostics ---
 let isCapturing = false;         // prevents overlapping capture calls
@@ -273,7 +273,7 @@ async function startSongTitlePolling() {
               el.value = text;
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
-            }, 'NOW PLAYING: '+newTitle);
+            }, '🎵: '+newTitle);
             await sleep(100);
           }
 
@@ -575,8 +575,16 @@ async function startTranscoding() {
       },HLS_SETUP_DELAY);
     })
     .on('stderr', line => {
-      stderrBuffer.push(line);
-      if (stderrBuffer.length > STDERR_BUFFER_LINES) stderrBuffer.shift();
+      // Parse the line for the "Opening" event
+      // FFmpeg logs: [concat @ 0x...] Opening '/app/music/Song.mp3'
+      const songMatch = line.match(/Opening '(.+?)'/);
+
+      if (song            Match && songMatch[1].endsWith('.mp3')) {
+        const fullPath = songMatch[1];
+        // Store the full path or just the filename
+        songNowPlaying = path.basename(fullPath);
+
+        logTS(`🎵: ${songNowPlaying}`);
     })
     .on('progress', p => {
       lastProgress = p;
