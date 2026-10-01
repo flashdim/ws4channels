@@ -111,6 +111,7 @@ services:
       - VIEW_MODE=standard
       - KBPS_BITRATE=1000
       - FRAME_RATE=15
+      - RESTREAM_MUSIC=false
       - SHUFFLE_MUSIC=true
       - WS4KP_FORECAST_CD=1.0
       - WS4KP_SCANLINES=false
@@ -149,6 +150,8 @@ Then start the container:
 	•  FRAME_RATE: Stream frame rate (default: 15)
 
 	•  CHANNEL_NUMBER: Sets the channel number (default: 275)
+  
+	•  RESTREAM_MUSIC: Pull music from WS4KP instead of using a custom playlist (default: false)
   
 	•  SHUFFLE_MUSIC: Randomize the order in which detected mp3s are played (default: false)
   
