@@ -111,6 +111,7 @@ let isStreamReady = false;
 let xvfb = null;
 let lastLoggedTime = null;
 let songNowPlaying = 'Starting stream...';
+let songWasPlaying = 'Starting stream...';
 
 // --- State for backpressure + overlap protection + restart diagnostics ---
 let isCapturing = false;         // prevents overlapping capture calls
@@ -241,17 +242,10 @@ async function startSongTitlePolling() {
     }
 
     try {
-      // Read the current song title from the DOM
-      const newTitle = await page.evaluate(() => {
-        const elem = document.querySelector('#musicTrack');
-        return elem ? elem.textContent.trim() : null;
-      });
-
       // Only update if the title has changed
-      if (newTitle && newTitle !== songNowPlaying) {
-        const oldTitle = songNowPlaying;
-        songNowPlaying = newTitle;
-        logTS(`Song changed: "${oldTitle}" → "${newTitle}"`);
+      if (songNowPlaying !== songWasPlaying) {
+        logTS(`Song changed: "${songWasPlaying}" → "${songNowPlaying}"`);
+        songWasPlaying = songNowPlaying;
 
         // Update the custom text input and enable/set it
         try {
@@ -273,7 +267,7 @@ async function startSongTitlePolling() {
               el.value = text;
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
-            }, '🎵: '+newTitle);
+            }, '🎵: '+songNowPlaying);
             await sleep(100);
           }
 
@@ -281,7 +275,7 @@ async function startSongTitlePolling() {
           const setButton = await page.$('#settings-customText-button');
           if (setButton) {
             await setButton.click();
-            logTS(`Updated custom text to: "${newTitle}"`);
+            logTS(`Updated custom text to: "${songNowPlaying}"`);
           }
         } catch (err) {
           logTS(`Failed to update custom text: ${err.message}`);
