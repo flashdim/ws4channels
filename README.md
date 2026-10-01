@@ -151,7 +151,7 @@ Then start the container:
 
 	•  CHANNEL_NUMBER: Sets the channel number (default: 275)
   
-	•  Capture and restream music produced by WS4KP instead of using the local music folder (default: false)
+	•  RESTREAM_MUSIC: Transcode music produced by WS4KP instead of using the local music folder (default: false)
   
 	•  SHUFFLE_MUSIC: Randomize the order in which detected mp3s are played (default: false)
   
