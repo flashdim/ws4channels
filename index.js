@@ -34,7 +34,7 @@ const WS4KP_LOCAL_FORECAST = process.env.WS4KP_LOCAL_FORECAST || true;
 const WS4KP_EXTENDED_FORECAST = process.env.WS4KP_EXTENDED_FORECAST || true;
 const WS4KP_ALMANAC = process.env.WS4KP_ALMANAC || false;
 const WS4KP_RADAR = process.env.WS4KP_RADAR || true;
-const WS4KP_SHOW_SONG_TITLE = process.env.WS4KP_SHOW_SONG_TITLE || false;
+const WS4KP_SHOW_SONG_TITLE = process.env.WS4KP_SHOW_SONG_TITLE?.toLowerCase() === 'true' || false;
 const WS4KP_URL = `http://${WS4KP_HOST}:${WS4KP_PORT}?radar=${WS4KP_RADAR}&almanac=${WS4KP_ALMANAC}&extended-forecast=${WS4KP_EXTENDED_FORECAST}&local-forecast=${WS4KP_LOCAL_FORECAST}&regional-forecast=${WS4KP_REGIONAL_FORECAST}&travel=${WS4KP_TRAVEL}&hourly-graph=${WS4KP_HOURLY_GRAPH}&hourly=${WS4KP_HOURLY}&latest-observations=${WS4KP_LATEST_OBSERVATIONS}&current-weather=${WS4KP_CURRENT_WEATHER}&scanLines=${WS4KP_SCANLINES}&speed=${WS4KP_FORECAST_CD}&spc-outlook=false`;
 const PERMALINK_URL = process.env.PERMALINK_URL || null;
 const HLS_SETUP_DELAY = 2000;
@@ -56,6 +56,9 @@ const BROWSER_REFRESH_MINUTES = parseInt(process.env.BROWSER_REFRESH_MINUTES || 
 const SEGMENT_STALL_WARN_MS = 8000;
 const SEGMENT_CHECK_INTERVAL_MS = 2000;
 const STDERR_BUFFER_LINES = 40;
+
+// Song title polling interval (ms)
+const SONG_TITLE_POLL_INTERVAL_MS = 1000;
 
 const OUTPUT_DIR = path.join(__dirname, 'output');
 const AUDIO_DIR = path.join(__dirname, 'music');
@@ -106,6 +109,7 @@ let captureProcess = null;
 let captureInterval = null;
 let refreshTimer = null;
 let segmentWatchdogInterval = null;
+let songTitlePollingInterval = null;
 let isStreamReady = false;
 let xvfb = null;
 let lastLoggedTime = null;
@@ -220,6 +224,92 @@ function generateXMLTV(host) {
   return xml;
 }
 
+/**
+ * Polls for song title changes and updates the custom text crawl in WS4KP.
+ * Runs at SONG_TITLE_POLL_INTERVAL_MS and updates only when the title changes.
+ */
+async function startSongTitlePolling() {
+  if (songTitlePollingInterval) clearInterval(songTitlePollingInterval);
+  if (!WS4KP_SHOW_SONG_TITLE || !page || page.isClosed()) {
+    return;
+  }
+
+  logTS('Starting song title polling');
+  songTitlePollingInterval = setInterval(async () => {
+    if (!page || page.isClosed()) {
+      logTS('Page closed, stopping song title polling');
+      if (songTitlePollingInterval) clearInterval(songTitlePollingInterval);
+      songTitlePollingInterval = null;
+      return;
+    }
+
+    try {
+      // Read the current song title from the DOM
+      const newTitle = await page.evaluate(() => {
+        const elem = document.querySelector('#musicTrack');
+        return elem ? elem.textContent.trim() : null;
+      });
+
+      // Only update if the title has changed
+      if (newTitle && newTitle !== ws4kp_songNowPlaying) {
+        const oldTitle = ws4kp_songNowPlaying;
+        ws4kp_songNowPlaying = newTitle;
+        logTS(`Song changed: "${oldTitle}" → "${newTitle}"`);
+
+        // Update the custom text input and enable/set it
+        try {
+          // Ensure custom text checkbox is enabled
+          const checkbox = await page.$('#settings-customTextEnable-checkbox');
+          if (checkbox) {
+            const isChecked = await checkbox.evaluate(el => el.checked);
+            if (!isChecked) {
+              await checkbox.click();
+              await sleep(100);
+            }
+          }
+
+          // Set the text input value
+          const textInput = await page.$('#settings-customText-string');
+          if (textInput) {
+            // Clear the input and type the new title
+            await textInput.evaluate((el, text) => {
+              el.value = text;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }, newTitle);
+            await sleep(100);
+          }
+
+          // Click the Set button
+          const setButton = await page.$('#settings-customText-button');
+          if (setButton) {
+            await setButton.click();
+            logTS(`Updated custom text to: "${newTitle}"`);
+          }
+        } catch (err) {
+          logTS(`Failed to update custom text: ${err.message}`);
+        }
+      }
+    } catch (err) {
+      // Silently catch errors during polling to avoid spam; log only serious issues
+      if (!err.message.includes('Target page, context or browser has been closed')) {
+        logTS(`Song title polling error: ${err.message}`);
+      }
+    }
+  }, SONG_TITLE_POLL_INTERVAL_MS);
+}
+
+/**
+ * Stops the song title polling interval.
+ */
+function stopSongTitlePolling() {
+  if (songTitlePollingInterval) {
+    clearInterval(songTitlePollingInterval);
+    songTitlePollingInterval = null;
+    logTS('Song title polling stopped');
+  }
+}
+
 async function startBrowser(reason = 'initial startup') {
   // Hard lock: only one browser launch can be in progress at a time.
   if (isRestartingBrowser) {
@@ -229,6 +319,9 @@ async function startBrowser(reason = 'initial startup') {
   isRestartingBrowser = true;
 
   try {
+    // Stop song title polling before browser restart
+    stopSongTitlePolling();
+
     browserRestartCount++;
     if(xvfb) await xvfb.stop();
     xvfb = await new Xvfb ({
@@ -346,6 +439,12 @@ async function startBrowser(reason = 'initial startup') {
     // Reset capture guards after a fresh browser/page is ready.
     isCapturing = false;
     captureStartedAt = null;
+    
+    // Start song title polling if enabled
+    if (WS4KP_SHOW_SONG_TITLE) {
+      await startSongTitlePolling();
+    }
+    
     logTS(`Browser ready (launch #${browserRestartCount})`);
   } finally {
     isRestartingBrowser = false;
@@ -576,6 +675,7 @@ async function startTranscoding() {
 }
 
 async function stopTranscoding(){
+  stopSongTitlePolling();
   if(captureInterval) clearInterval(captureInterval);
   captureInterval=null; isStreamReady=false;
   if(refreshTimer) clearInterval(refreshTimer); refreshTimer=null;
