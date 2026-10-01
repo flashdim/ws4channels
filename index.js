@@ -566,13 +566,13 @@ async function startTranscoding() {
     ])
     .output(HLS_FILE)
     .on('start',(cmd)=>{
-        logTS(`Started FFmpeg`);
-        logTS(`FFmpeg command: ${cmd}`);
-        setTimeout(()=>{
-          isStreamReady = true;
-          isCapturing = true;
-          captureStartedAt = Date.now();
-        },HLS_SETUP_DELAY);
+      logTS(`Started FFmpeg`);
+      logTS(`FFmpeg command: ${cmd}`);
+      setTimeout(()=>{
+        isStreamReady = true;
+        isCapturing = true;
+        captureStartedAt = Date.now();
+      },HLS_SETUP_DELAY);
     })
     .on('stderr', line => {
       stderrBuffer.push(line);
