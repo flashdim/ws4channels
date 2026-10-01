@@ -6,6 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import Xvfb from 'xvfb';
 import { PassThrough, Writable } from 'stream';
+import { launch, getStream } from "puppeteer-stream";
 import { spawn } from 'child_process';
 
 // Increase the process listener limit. Puppeteer registers process-level
