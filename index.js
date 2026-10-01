@@ -39,6 +39,7 @@ const PERMALINK_URL = process.env.PERMALINK_URL || null;
 const HLS_SETUP_DELAY = 2000;
 const KBPS_BITRATE = process.env.KBPS_BITRATE || '1000';
 const FRAME_RATE = Number(process.env.FRAME_RATE) || 15;
+const RESTREAM_AUDIO = Number(process.env.RESTREAM_AUDIO) || false;
 const HLS_SEGMENT_SECONDS = 2;
 const sleep = (waitTimeInMs) => new Promise(resolve => setTimeout(resolve, waitTimeInMs));
 
