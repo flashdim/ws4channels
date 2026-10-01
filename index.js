@@ -579,7 +579,7 @@ async function startTranscoding() {
       // FFmpeg logs: [concat @ 0x...] Opening '/app/music/Song.mp3'
       const songMatch = line.match(/Opening '(.+?)'/);
 
-      if (song            Match && songMatch[1].endsWith('.mp3')) {
+      if (songMatch && songMatch[1].endsWith('.mp3')) {
         const fullPath = songMatch[1];
         // Store the full path or just the filename
         songNowPlaying = path.basename(fullPath);
