@@ -276,7 +276,7 @@ async function startSongTitlePolling() {
               el.value = text;
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
-            }, newTitle);
+            }, 'NOW PLAYING: '+newTitle);
             await sleep(100);
           }
 
