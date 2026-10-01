@@ -151,7 +151,7 @@ Then start the container:
 
 	•  CHANNEL_NUMBER: Sets the channel number (default: 275)
   
-	•  RESTREAM_MUSIC: Pull music from WS4KP instead of using a custom playlist (default: false)
+	•  Capture and restream the audio produced by WS4KP instead of using the local music folder (default: false)
   
 	•  SHUFFLE_MUSIC: Randomize the order in which detected mp3s are played (default: false)
   
@@ -205,16 +205,14 @@ Example: <http://192.168.1.131:9798/guide.xml>
 
 ## Music Configuration
 
-- The application plays MP3 files from the `music` folder in the project root.
-- Default tracks included:
-  - 01 WST26.mp3
-  - 02 WST3.mp3
-  - 03 TB.mp3
-  - 04 LNC.mp3
-  - 05 CF.mp3
-  - 06 WST14.mp3
-  - 07 WST18.mp3
+By default, the application plays MP3 files from the `music` folder in the project root.
   
-- To customize, add your own MP3 files to the `music` folder. Only `.mp3` files are included in the stream.
-- If no MP3s are found, the default tracks are used.
-- After adding your mp3 tracks to the music folder restart the container so the app will pick up the new music.
+To customize, add your own MP3 files to the `music` folder. Only `.mp3` files are included in the stream.
+If no MP3s are found, the default tracks are used.
+After adding your mp3 tracks to the music folder restart the container so the app will pick up the new music.
+
+Set RESTREAM_MUSIC=true to capture and restream the audio produced by WS4KP instead. When this option is enabled:
+
+    The local music folder is not used.
+    SHUFFLE_MUSIC has no effect.
+
