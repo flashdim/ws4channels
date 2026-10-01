@@ -109,7 +109,7 @@ let segmentWatchdogInterval = null;
 let isStreamReady = false;
 let xvfb = null;
 let lastLoggedTime = null;
-let songNowPlaying = '';
+let ws4kp_songNowPlaying = '';
 
 // --- State for backpressure + overlap protection + restart diagnostics ---
 let isCapturing = false;         // prevents overlapping capture calls
