@@ -1,5 +1,5 @@
 import puppeteer from 'puppeteer';
-import { launch, getStream } from "puppeteer-stream";
+//import { launch, getStream } from "puppeteer-stream";
 import express from 'express';
 import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
@@ -34,7 +34,6 @@ const WS4KP_LOCAL_FORECAST = process.env.WS4KP_LOCAL_FORECAST || true;
 const WS4KP_EXTENDED_FORECAST = process.env.WS4KP_EXTENDED_FORECAST || true;
 const WS4KP_ALMANAC = process.env.WS4KP_ALMANAC || false;
 const WS4KP_RADAR = process.env.WS4KP_RADAR || true;
-const WS4KP_SHOW_SONG_TITLE = process.env.WS4KP_SHOW_SONG_TITLE || false;
 const WS4KP_URL = `http://${WS4KP_HOST}:${WS4KP_PORT}?radar=${WS4KP_RADAR}&almanac=${WS4KP_ALMANAC}&extended-forecast=${WS4KP_EXTENDED_FORECAST}&local-forecast=${WS4KP_LOCAL_FORECAST}&regional-forecast=${WS4KP_REGIONAL_FORECAST}&travel=${WS4KP_TRAVEL}&hourly-graph=${WS4KP_HOURLY_GRAPH}&hourly=${WS4KP_HOURLY}&latest-observations=${WS4KP_LATEST_OBSERVATIONS}&current-weather=${WS4KP_CURRENT_WEATHER}&scanLines=${WS4KP_SCANLINES}&speed=${WS4KP_FORECAST_CD}&spc-outlook=false`;
 const PERMALINK_URL = process.env.PERMALINK_URL || null;
 const HLS_SETUP_DELAY = 2000;
@@ -42,6 +41,7 @@ const KBPS_BITRATE = process.env.KBPS_BITRATE || '1000';
 const FRAME_RATE = Number(process.env.FRAME_RATE) || 15;
 const SHUFFLE_MUSIC = process.env.SHUFFLE_MUSIC || false;
 const RESTREAM_MUSIC = process.env.RESTREAM_MUSIC || false;
+const WS4KP_SHOW_SONG_TITLE = process.env.WS4KP_SHOW_SONG_TITLE?.toLowerCase() === 'true' || false;
 const HLS_SEGMENT_SECONDS = 2;
 const sleep = (waitTimeInMs) => new Promise(resolve => setTimeout(resolve, waitTimeInMs));
 
@@ -347,6 +347,7 @@ async function startBrowser(reason = 'initial startup') {
         '--disable-dev-shm-usage',
         '--disable-extensions',
         '--start-fullscreen',
+        '--autoplay-policy=no-user-gesture-required',
         `--display=${xvfb._display}`
       ],
       defaultViewport: null
