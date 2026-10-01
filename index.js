@@ -110,7 +110,7 @@ let songTitlePollingInterval = null;
 let isStreamReady = false;
 let xvfb = null;
 let lastLoggedTime = null;
-let ws4kp_songNowPlaying = '';
+let songNowPlaying = '';
 
 // --- State for backpressure + overlap protection + restart diagnostics ---
 let isCapturing = false;         // prevents overlapping capture calls
@@ -248,9 +248,9 @@ async function startSongTitlePolling() {
       });
 
       // Only update if the title has changed
-      if (newTitle && newTitle !== ws4kp_songNowPlaying) {
-        const oldTitle = ws4kp_songNowPlaying;
-        ws4kp_songNowPlaying = newTitle;
+      if (newTitle && newTitle !== songNowPlaying) {
+        const oldTitle = songNowPlaying;
+        songNowPlaying = newTitle;
         logTS(`Song changed: "${oldTitle}" → "${newTitle}"`);
 
         // Update the custom text input and enable/set it
