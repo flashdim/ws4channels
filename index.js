@@ -34,6 +34,7 @@ const WS4KP_LOCAL_FORECAST = process.env.WS4KP_LOCAL_FORECAST || true;
 const WS4KP_EXTENDED_FORECAST = process.env.WS4KP_EXTENDED_FORECAST || true;
 const WS4KP_ALMANAC = process.env.WS4KP_ALMANAC || false;
 const WS4KP_RADAR = process.env.WS4KP_RADAR || true;
+const WS4KP_SHOW_SONG_TITLE = process.env.WS4KP_SHOW_SONG_TITLE || false;
 const WS4KP_URL = `http://${WS4KP_HOST}:${WS4KP_PORT}?radar=${WS4KP_RADAR}&almanac=${WS4KP_ALMANAC}&extended-forecast=${WS4KP_EXTENDED_FORECAST}&local-forecast=${WS4KP_LOCAL_FORECAST}&regional-forecast=${WS4KP_REGIONAL_FORECAST}&travel=${WS4KP_TRAVEL}&hourly-graph=${WS4KP_HOURLY_GRAPH}&hourly=${WS4KP_HOURLY}&latest-observations=${WS4KP_LATEST_OBSERVATIONS}&current-weather=${WS4KP_CURRENT_WEATHER}&scanLines=${WS4KP_SCANLINES}&speed=${WS4KP_FORECAST_CD}&spc-outlook=false`;
 const PERMALINK_URL = process.env.PERMALINK_URL || null;
 const HLS_SETUP_DELAY = 2000;
@@ -108,6 +109,7 @@ let segmentWatchdogInterval = null;
 let isStreamReady = false;
 let xvfb = null;
 let lastLoggedTime = null;
+let songNowPlaying = '';
 
 // --- State for backpressure + overlap protection + restart diagnostics ---
 let isCapturing = false;         // prevents overlapping capture calls
