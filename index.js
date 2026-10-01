@@ -534,82 +534,82 @@ async function startTranscoding() {
   lastProgressAt = null;
 
   ffmpegProc = ffmpeg()
-  .input(xvfb._display + '.0')
-  .inputOptions([
-    '-f x11grab',
-    `-framerate ${FRAME_RATE}`
-  ])
-  .input(path.join(__dirname, 'audio_list.txt'))
-  .inputOptions([
-    '-f concat',
-    '-safe 0',
-    '-stream_loop -1'
-  ])
-  .complexFilter([
-    `[0:v]scale=${VIEW_DIMENSIONS.width}:${VIEW_DIMENSIONS.height}[v]`,
-    '[1:a]aresample=48000,volume=0.5[a]'
-  ])
-  .outputOptions([
-    '-map [v]',
-    '-map [a]',
-    '-c:v libx264',
-    '-preset veryfast',
-    '-c:a aac',
-    '-b:a 128k',
-    '-rc_mode 2',
-    `-g ${FRAME_RATE * HLS_SEGMENT_SECONDS}`,
-    `-b:v ${KBPS_BITRATE}k`,
-    '-f hls',
-    `-hls_time ${HLS_SEGMENT_SECONDS}`,
-    '-hls_list_size 6',
-    '-hls_flags delete_segments'
-  ])
-  .output(HLS_FILE)
-  .on('start',(cmd)=>{
-      logTS(`Started FFmpeg`);
-      logTS(`FFmpeg command: ${cmd}`);
-      setTimeout(()=>{
-        isStreamReady = true;
-        isCapturing = true;
-        captureStartedAt = Date.now();
-      },HLS_SETUP_DELAY);
-  })
-  .on('stderr', line => {
-    stderrBuffer.push(line);
-    if (stderrBuffer.length > STDERR_BUFFER_LINES) stderrBuffer.shift();
-  })
-  .on('progress', p => {
-    lastProgress = p;
-    lastProgressAt = Date.now();
+    .input(xvfb._display + '.0')
+    .inputOptions([
+      '-f x11grab',
+      `-framerate ${FRAME_RATE}`
+    ])
+    .input(path.join(__dirname, 'audio_list.txt'))
+    .inputOptions([
+      '-f concat',
+      '-safe 0',
+      '-stream_loop -1'
+    ])
+    .complexFilter([
+      `[0:v]scale=${VIEW_DIMENSIONS.width}:${VIEW_DIMENSIONS.height}[v]`,
+      '[1:a]aresample=48000,volume=0.5[a]'
+    ])
+    .outputOptions([
+      '-map [v]',
+      '-map [a]',
+      '-c:v libx264',
+      '-preset veryfast',
+      '-c:a aac',
+      '-b:a 128k',
+      '-rc_mode 2',
+      `-g ${FRAME_RATE * HLS_SEGMENT_SECONDS}`,
+      `-b:v ${KBPS_BITRATE}k`,
+      '-f hls',
+      `-hls_time ${HLS_SEGMENT_SECONDS}`,
+      '-hls_list_size 6',
+      '-hls_flags delete_segments'
+    ])
+    .output(HLS_FILE)
+    .on('start',(cmd)=>{
+        logTS(`Started FFmpeg`);
+        logTS(`FFmpeg command: ${cmd}`);
+        setTimeout(()=>{
+          isStreamReady = true;
+          isCapturing = true;
+          captureStartedAt = Date.now();
+        },HLS_SETUP_DELAY);
+    })
+    .on('stderr', line => {
+      stderrBuffer.push(line);
+      if (stderrBuffer.length > STDERR_BUFFER_LINES) stderrBuffer.shift();
+    })
+    .on('progress', p => {
+      lastProgress = p;
+      lastProgressAt = Date.now();
 
-    // Find interval values - only measure totalFrameTimeMs if we have a valid start time
-    totalFrameTimeMs =  captureStartedAt? Date.now() - captureStartedAt : null;
-    const frameCount = lastProgress ? lastProgress.frames : 0;
-    avgFrameTimeMs = frameCount > 0 ? Math.round(totalFrameTimeMs / frameCount) : null;
-    const lastFfmpegTimemark = lastProgress ? lastProgress.timemark : null;
-    if (avgFrameTimeMs > maxFrameTimeMs) maxFrameTimeMs = avgFrameTimeMs;
+      // Find interval values - only measure totalFrameTimeMs if we have a valid start time
+      totalFrameTimeMs =  captureStartedAt? Date.now() - captureStartedAt : null;
+      const frameCount = lastProgress ? lastProgress.frames : 0;
+      avgFrameTimeMs = frameCount > 0 ? Math.round(totalFrameTimeMs / frameCount) : null;
+      const lastFfmpegTimemark = lastProgress ? lastProgress.timemark : null;
+      if (avgFrameTimeMs > maxFrameTimeMs) maxFrameTimeMs = avgFrameTimeMs;
 
-    // Every minute (60000ms), log a quick health summary.
-    //  We go by seconds because ffmpeg.on('progress') reports unevenly every 30ms or so.
-    //  Then, we use lastLoggedTime so we don't duplicate logs.'
-    let elapsedSeconds = Math.floor(totalFrameTimeMs/1000);
-    if (((elapsedSeconds % 60) === 0) && (lastLoggedTime != elapsedSeconds)) {
-      lastLoggedTime = elapsedSeconds;
-      const sinceProgress = lastProgressAt ? (Date.now() - lastProgressAt) : null;
-      logTS(`Health check: captureStartedAt=${captureStartedAt}, totalFrameTimeMs=${totalFrameTimeMs}, frames=${frameCount}, avgFrameTimeMs=${avgFrameTimeMs}, maxFrameTimeMs=${maxFrameTimeMs}, skippedRestarting=${framesSkippedRestarting}, browserRestarts=${browserRestartCount}, segmentStallWarnings=${segmentStallWarningsIssued}, msSinceLastFfmpegProgress=${sinceProgress}`);
-    }
-  })
-  .on('error', async err=>{
-    logTS(`FFmpeg error: ${err.message}`);
-    await stopTranscoding();
-    startTranscoding();
-  })
-  .on('end',()=>{
-    ffmpegProc = null;
-    isStreamReady = false;
-    isCapturing = false;
-    captureStartedAt = null;
-  });
+      // Every minute (60000ms), log a quick health summary.
+      //  We go by seconds because ffmpeg.on('progress') reports unevenly every 30ms or so.
+      //  Then, we use lastLoggedTime so we don't duplicate logs.'
+      let elapsedSeconds = Math.floor(totalFrameTimeMs/1000);
+      if (((elapsedSeconds % 60) === 0) && (lastLoggedTime != elapsedSeconds)) {
+        lastLoggedTime = elapsedSeconds;
+        const sinceProgress = lastProgressAt ? (Date.now() - lastProgressAt) : null;
+        logTS(`Health check: captureStartedAt=${captureStartedAt}, totalFrameTimeMs=${totalFrameTimeMs}, frames=${frameCount}, avgFrameTimeMs=${avgFrameTimeMs}, maxFrameTimeMs=${maxFrameTimeMs}, skippedRestarting=${framesSkippedRestarting}, browserRestarts=${browserRestartCount}, segmentStallWarnings=${segmentStallWarningsIssued}, msSinceLastFfmpegProgress=${sinceProgress}`);
+      }
+    })
+    .on('error', async err=>{
+      logTS(`FFmpeg error: ${err.message}`);
+      await stopTranscoding();
+      startTranscoding();
+    })
+    .on('end',()=>{
+      ffmpegProc = null;
+      isStreamReady = false;
+      isCapturing = false;
+      captureStartedAt = null;
+    });
 
   startSegmentWatchdog();
 
