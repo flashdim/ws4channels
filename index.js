@@ -1,4 +1,5 @@
 import puppeteer from 'puppeteer';
+import { launch, getStream } from "puppeteer-stream";
 import express from 'express';
 import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
@@ -6,7 +7,6 @@ import fs from 'fs';
 import os from 'os';
 import Xvfb from 'xvfb';
 import { PassThrough, Writable } from 'stream';
-import { launch, getStream } from "puppeteer-stream";
 import { spawn } from 'child_process';
 
 // Increase the process listener limit. Puppeteer registers process-level
@@ -39,8 +39,8 @@ const PERMALINK_URL = process.env.PERMALINK_URL || null;
 const HLS_SETUP_DELAY = 2000;
 const KBPS_BITRATE = process.env.KBPS_BITRATE || '1000';
 const FRAME_RATE = Number(process.env.FRAME_RATE) || 15;
-const SHUFFLE_MUSIC = Number(process.env.SHUFFLE_MUSIC) || false;
-const RESTREAM_MUSIC = Number(process.env.RESTREAM_AUDIO) || false;
+const SHUFFLE_MUSIC = process.env.SHUFFLE_MUSIC || false;
+const RESTREAM_MUSIC = process.env.RESTREAM_AUDIO || false;
 const HLS_SEGMENT_SECONDS = 2;
 const sleep = (waitTimeInMs) => new Promise(resolve => setTimeout(resolve, waitTimeInMs));
 
@@ -100,6 +100,7 @@ app.use('/logo', express.static(LOGO_DIR));
 let ffmpegProc = null;
 let browser = null;
 let page = null;
+let audioStream = null;
 let captureProcess = null;
 let captureInterval = null;
 let refreshTimer = null;
@@ -182,12 +183,6 @@ function createAudioInputFile() {
     console.log('Shuffled music list based on SHUFFLE_MUSIC=true');
   }
 
-  // Restream music if requested
-  if (RESTREAM_MUSIC) {
-    files = shuffleArray(files);
-    console.log('Shuffled music list based on RESTREAM_MUSIC=true');
-  }
-
   console.log(`Loaded ${files.length} music files`);
   const audioList = files.map(file => `file '${path.join(AUDIO_DIR, file)}'`).join('\n');
   fs.writeFileSync(path.join(__dirname, 'audio_list.txt'), audioList);
@@ -247,6 +242,7 @@ async function startBrowser(reason = 'initial startup') {
     logTS(`Launching browser on ${xvfb._display} (launch #${browserRestartCount}, reason: ${reason})`);
     if(browser) await browser.close().catch(()=>{});
     browser = await puppeteer.launch({
+      executablePath: puppeteer.executablePath(),
       headless: false,
       args:[
         '--no-sandbox',
@@ -329,6 +325,22 @@ async function startBrowser(reason = 'initial startup') {
       }
     }
     await page.setViewport({ ...VIEW_DIMENSIONS });
+
+    if (RESTREAM_MUSIC) {
+      if (audioStream) {
+        audioStream.destroy();
+        audioStream = null;
+      }
+
+      audioStream = await getStream(page, {
+        audio: true,
+        video: false
+      });
+
+      logTS('Using live WS4KP browser audio stream');
+    } else {
+      logTS('Using local music library');
+    }
 
     // Reset capture guards after a fresh browser/page is ready.
     isCapturing = false;
