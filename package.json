@@ -10,6 +10,7 @@
     "express": "^5.2.1",
     "puppeteer": "^25.12.0",
     "fluent-ffmpeg": "^2.1.3",
-    "xvfb": "^0.4.0"
+    "xvfb": "^0.4.0",
+    "naudiodon": "^2.3.6"
   }
 }
