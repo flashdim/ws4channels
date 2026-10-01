@@ -6,7 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import Xvfb from 'xvfb';
 import { PassThrough, Writable } from 'stream';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 
 // Increase the process listener limit. Puppeteer registers process-level
 // exit/SIGINT/SIGTERM/SIGHUP listeners on every browser launch and does not
@@ -34,7 +34,7 @@ const WS4KP_EXTENDED_FORECAST = process.env.WS4KP_EXTENDED_FORECAST || true;
 const WS4KP_ALMANAC = process.env.WS4KP_ALMANAC || false;
 const WS4KP_RADAR = process.env.WS4KP_RADAR || true;
 const WS4KP_SERVER_MUSIC = String(process.env.WS4KP_SERVER_MUSIC || 'false').toLowerCase() === 'true';
-const PIPEWIRE_AUDIO_SOURCE = process.env.PIPEWIRE_AUDIO_SOURCE || 'default';
+const PIPEWIRE_AUTO_LOOPBACK = String(process.env.PIPEWIRE_AUTO_LOOPBACK || 'true').toLowerCase() === 'true';
 const WS4KP_URL = `http://${WS4KP_HOST}:${WS4KP_PORT}?radar=${WS4KP_RADAR}&almanac=${WS4KP_ALMANAC}&extended-forecast=${WS4KP_EXTENDED_FORECAST}&local-forecast=${WS4KP_LOCAL_FORECAST}&regional-forecast=${WS4KP_REGIONAL_FORECAST}&travel=${WS4KP_TRAVEL}&hourly-graph=${WS4KP_HOURLY_GRAPH}&hourly=${WS4KP_HOURLY}&latest-observations=${WS4KP_LATEST_OBSERVATIONS}&current-weather=${WS4KP_CURRENT_WEATHER}&scanLines=${WS4KP_SCANLINES}&speed=${WS4KP_FORECAST_CD}&spc-outlook=false`;
 const PERMALINK_URL = process.env.PERMALINK_URL || null;
 const HLS_SETUP_DELAY = 2000;
@@ -129,6 +129,11 @@ let segmentStallActive = false;     // whether we're currently in a detected sta
 let segmentStallWarningsIssued = 0; // how many distinct stall episodes we've logged
 let lastStallDumpAt = 0;            // throttles repeated stderr dumps during one long stall
 
+// --- PipeWire loopback management ---
+let pipewireLoopbackProcess = null;
+let pipewireLoopbackDevice = null;
+
+// --- A Sleep function for readability ---
 const waitFor = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function logTS(msg) {
@@ -145,6 +150,105 @@ function shuffleArray(array) {
   return arr;
 }
 
+// Helper: PipeWire Availability Check
+function isPipeWireAvailable() {
+  try {
+    execSync('which pw-loopback > /dev/null 2>&1', { stdio: 'pipe' });
+    execSync('pactl info > /dev/null 2>&1', { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function startPipeWireLoopback() {
+  if (!WS4KP_SERVER_MUSIC || !PIPEWIRE_AUTO_LOOPBACK) {
+    logTS('PipeWire loopback disabled (WS4KP_SERVER_MUSIC or PIPEWIRE_AUTO_LOOPBACK not set)');
+    return null;
+  }
+
+  if (!isPipeWireAvailable()) {
+    logTS('WARNING: PipeWire/PulseAudio not available on this system; skipping loopback setup');
+    return null;
+  }
+
+  try {
+    logTS('Starting PipeWire loopback device...');
+
+    // Start pw-loopback in the background
+    pipewireLoopbackProcess = spawn('pw-loopback', [
+      '--capture', 'Channels DVR - Stereo Mix',  // capture side label
+      '--playback', 'Channels DVR - Output'      // playback side label
+    ], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false
+    });
+
+    pipewireLoopbackProcess.on('error', (err) => {
+      logTS(`ERROR: Failed to start pw-loopback: ${err.message}`);
+      pipewireLoopbackProcess = null;
+      pipewireLoopbackDevice = null;
+    });
+
+    pipewireLoopbackProcess.on('exit', (code, signal) => {
+      logTS(`PipeWire loopback exited with code ${code} (signal: ${signal})`);
+      pipewireLoopbackProcess = null;
+      pipewireLoopbackDevice = null;
+    });
+
+    // Give it a moment to start and register the device
+    await sleep(1000);
+
+    // Query for the newly created device
+    try {
+      const output = execSync('pactl list sources short 2>/dev/null', { encoding: 'utf8' });
+      const lines = output.split('\n');
+
+      // Look for a device matching our loopback pattern
+      for (const line of lines) {
+        if (line.includes('loopback') && line.includes('Channels DVR')) {
+          // Extract device name (format: "N  module-loopback.c ... alsa_input.something")
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 2) {
+            pipewireLoopbackDevice = parts[1];
+            logTS(`PipeWire loopback device registered: ${pipewireLoopbackDevice}`);
+            return pipewireLoopbackDevice;
+          }
+        }
+      }
+
+      // Fallback: use the default capture side
+      pipewireLoopbackDevice = 'alsa_output.pci-0000_00_1f.3-platform-skl_hda_dsp.stereo-mix';
+      logTS(`Using fallback loopback device: ${pipewireLoopbackDevice}`);
+      return pipewireLoopbackDevice;
+    } catch (err) {
+      logTS(`WARNING: Could not query loopback device: ${err.message}`);
+      return null;
+    }
+  } catch (err) {
+    logTS(`ERROR starting PipeWire loopback: ${err.message}`);
+    return null;
+  }
+}
+
+async function stopPipeWireLoopback() {
+  if (pipewireLoopbackProcess) {
+    logTS('Stopping PipeWire loopback device...');
+    try {
+      pipewireLoopbackProcess.kill('SIGTERM');
+      // Wait briefly for graceful shutdown
+      await sleep(500);
+      if (pipewireLoopbackProcess && !pipewireLoopbackProcess.killed) {
+        pipewireLoopbackProcess.kill('SIGKILL');
+      }
+    } catch (err) {
+      logTS(`Error stopping loopback: ${err.message}`);
+    }
+    pipewireLoopbackProcess = null;
+    pipewireLoopbackDevice = null;
+  }
+}
+
 function getContainerLimits() {
   let cpuQuotaPath = '/sys/fs/cgroup/cpu.max';
   let memLimitPath = '/sys/fs/cgroup/memory.max';
@@ -157,7 +261,7 @@ function getContainerLimits() {
 
 function createAudioInputFile() {
     if (WS4KP_SERVER_MUSIC) {
-      logTS('WS4KP_SERVER_MUSIC=true: skipping MP3 playlist generation; using PipeWire input');
+      logTS('WS4KP_SERVER_MUSIC=true: skipping MP3 playlist generation; using PipeWire loopback device');
       return;
     }
 
@@ -421,6 +525,10 @@ function startSegmentWatchdog() {
 
 async function startTranscoding() {
   await startBrowser('initial startup');
+
+  // Start PipeWire loopback if enabled
+  const loopbackDevice = await startPipeWireLoopback();
+
   createAudioInputFile();
   scheduleBrowserRefresh();
 
@@ -435,17 +543,27 @@ async function startTranscoding() {
       `-framerate ${FRAME_RATE}`
     ]);
 
-  if (WS4KP_SERVER_MUSIC) {
-    logTS(`Using PipeWire audio source "${PIPEWIRE_AUDIO_SOURCE}" for music input`);
+  if (WS4KP_SERVER_MUSIC && loopbackDevice) {
+    logTS(`Using PipeWire loopback "${loopbackDevice}" for music input`);
     ffmpegInput
-      .input(PIPEWIRE_AUDIO_SOURCE)
+      .input(loopbackDevice)
       .inputOptions([
-        '-f pipewire',
-        '-thread_queue_size 4096'
+        '-f pulse',
+        '-thread_queue_size 4096',
+        '-rtbufsize 100M'
       ]);
+  } else if (WS4KP_SERVER_MUSIC) {
+    logTS('WARNING: WS4KP_SERVER_MUSIC=true but loopback device not available; falling back to MP3 library');
+    ffmpegInput
+    .input(path.join(__dirname, 'audio_list.txt'))
+    .inputOptions([
+      '-f concat',
+      '-safe 0',
+      '-stream_loop -1'
+    ]);
   } else {
     ffmpegInput
-    .input(path.join(__dirname,'audio_list.txt'))
+    .input(path.join(__dirname, 'audio_list.txt'))
     .inputOptions([
       '-f concat',
       '-safe 0',
@@ -552,12 +670,19 @@ async function startTranscoding() {
 
 async function stopTranscoding(){
   if(captureInterval) clearInterval(captureInterval);
-  captureInterval=null; isStreamReady=false;
-  if(refreshTimer) clearInterval(refreshTimer); refreshTimer=null;
-  if(segmentWatchdogInterval) clearInterval(segmentWatchdogInterval); segmentWatchdogInterval=null;
-  if(ffmpegProc) ffmpegProc.kill('SIGINT'); ffmpegProc=null;
-  if(browser) await browser.close().catch(()=>{}); browser=null;
-  if(xvfb) await xvfb.stop(); xvfb=null;
+  captureInterval=null;
+  isStreamReady=false;
+  if(refreshTimer) clearInterval(refreshTimer);
+  refreshTimer=null;
+  if(segmentWatchdogInterval) clearInterval(segmentWatchdogInterval);
+  segmentWatchdogInterval=null;
+  if(ffmpegProc) ffmpegProc.kill('SIGINT');
+  ffmpegProc=null;
+  if(browser) await browser.close().catch(()=>{});
+  browser=null;
+  if(xvfb) await xvfb.stop();
+  xvfb=null;
+  await stopPipeWireLoopback();
 }
 
 app.get('/playlist.m3u',(req,res)=>{
@@ -607,5 +732,14 @@ app.listen(STREAM_PORT, async ()=>{
   await startTranscoding();
 });
 
-process.on('SIGINT', async ()=>{ console.log('SIGINT received'); await stopTranscoding(); process.exit(); });
-process.on('SIGTERM', async ()=>{ console.log('SIGTERM received'); await stopTranscoding(); process.exit(); });
+process.on('SIGINT', async () => {
+  console.log('SIGINT received');
+  await stopTranscoding();
+  process.exit();
+});
+
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received');
+  await stopTranscoding();
+  process.exit();
+});
