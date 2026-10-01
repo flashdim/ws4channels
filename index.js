@@ -585,6 +585,7 @@ async function startTranscoding() {
         songNowPlaying = path.basename(fullPath);
 
         logTS(`🎵: ${songNowPlaying}`);
+      }
     })
     .on('progress', p => {
       lastProgress = p;
