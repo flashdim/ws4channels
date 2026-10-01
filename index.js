@@ -435,54 +435,71 @@ function startSegmentWatchdog() {
 
 async function startTranscoding() {
   await startBrowser('initial startup');
-  createAudioInputFile();
+
+  if (!RESTREAM_MUSIC) {
+    createAudioInputFile();
+  }
+
   scheduleBrowserRefresh();
 
   stderrBuffer = [];
   lastProgress = null;
   lastProgressAt = null;
 
-  ffmpegProc = ffmpeg()
-    .input(xvfb._display+'.0')
+  const command = ffmpeg()
+  .input(xvfb._display + '.0')
+  .inputOptions([
+    '-f x11grab',
+    `-framerate ${FRAME_RATE}`
+  ]);
+
+  if (RESTREAM_MUSIC) {
+    command
+    .input(audioStream)
+    .inputFormat('webm')
     .inputOptions([
-      '-f x11grab',
-      `-framerate ${FRAME_RATE}`
-    ])
-    .input(path.join(__dirname,'audio_list.txt'))
+      '-thread_queue_size 512'
+    ]);
+  } else {
+    command
+    .input(path.join(__dirname, 'audio_list.txt'))
     .inputOptions([
       '-f concat',
       '-safe 0',
-	  '-stream_loop -1'
-    ])
+      '-stream_loop -1'
+    ]);
+  }
+
+  ffmpegProc = command
     .complexFilter([
       `[0:v]scale=${VIEW_DIMENSIONS.width}:${VIEW_DIMENSIONS.height}[v]`,
       '[1:a]aresample=48000,volume=0.5[a]'
     ])
     .outputOptions([
-	'-map [v]',
-	'-map [a]',
-    '-c:v libx264',
-	'-preset veryfast',
-	'-c:a aac',
-	'-b:a 128k',
-	'-rc_mode 2',
-	`-g ${FRAME_RATE * HLS_SEGMENT_SECONDS}`,
-	`-b:v ${KBPS_BITRATE}k`,
-	'-f hls',
-	`-hls_time ${HLS_SEGMENT_SECONDS}`,
-	'-hls_list_size 6',
-	'-hls_flags delete_segments'
+      '-map [v]',
+      '-map [a]',
+      '-c:v libx264',
+      '-preset veryfast',
+      '-c:a aac',
+      '-b:a 128k',
+      '-rc_mode 2',
+      `-g ${FRAME_RATE * HLS_SEGMENT_SECONDS}`,
+      `-b:v ${KBPS_BITRATE}k`,
+      '-f hls',
+      `-hls_time ${HLS_SEGMENT_SECONDS}`,
+      '-hls_list_size 6',
+      '-hls_flags delete_segments'
     ])
-	.output(HLS_FILE)
+    .output(HLS_FILE)
     .on('start',(cmd)=>{
-		logTS(`Started FFmpeg`);
-		logTS(`FFmpeg command: ${cmd}`);
-		setTimeout(()=>{
+        logTS(`Started FFmpeg`);
+        logTS(`FFmpeg command: ${cmd}`);
+        setTimeout(()=>{
           isStreamReady = true;
           isCapturing = true;
           captureStartedAt = Date.now();
         },HLS_SETUP_DELAY);
-	})
+    })
     .on('stderr', line => {
       stderrBuffer.push(line);
       if (stderrBuffer.length > STDERR_BUFFER_LINES) stderrBuffer.shift();
