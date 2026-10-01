@@ -5,8 +5,12 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import Xvfb from 'xvfb';
+import portAudio from 'naudiodon';
 import { PassThrough, Writable } from 'stream';
 import { spawn, execSync } from 'child_process';
+
+console.log(portAudio.getDevices());
+console.log(portAudio.getHostAPIs());
 
 // Increase the process listener limit. Puppeteer registers process-level
 // exit/SIGINT/SIGTERM/SIGHUP listeners on every browser launch and does not
