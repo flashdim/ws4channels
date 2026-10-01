@@ -354,10 +354,10 @@ async function startBrowser(reason = 'initial startup') {
     page = await browser.newPage();
     if (PERMALINK_URL) {
       console.log(`Using custom permalink URL: ${PERMALINK_URL}`);
-      await page.goto(PERMALINK_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.goto(PERMALINK_URL, { waitUntil: 'networkidle2', timeout: 30000 });
     } else {
       console.log(`Using URL: ${WS4KP_URL}`);
-      await page.goto(WS4KP_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.goto(WS4KP_URL, { waitUntil: 'networkidle2', timeout: 30000 });
       try {
         const zipInput = await page.waitForSelector('input[placeholder="Zip or City, State"], input', { timeout: 5000 });
         if (zipInput) {
