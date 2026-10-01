@@ -538,7 +538,7 @@ async function startTranscoding() {
   .inputOptions([
     '-f x11grab',
     `-framerate ${FRAME_RATE}`
-  ]);
+  ])
   .input(path.join(__dirname, 'audio_list.txt'))
   .inputOptions([
     '-f concat',
