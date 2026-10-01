@@ -183,10 +183,10 @@ function createAudioInputFile() {
   // Shuffle if requested
   if (SHUFFLE_MUSIC) {
     files = shuffleArray(files);
-    console.log('Shuffled music list based on SHUFFLE_MUSIC=true');
+    logTS('Shuffled music list based on SHUFFLE_MUSIC=true');
   }
 
-  console.log(`Loaded ${files.length} music files`);
+  logTS(`Loaded ${files.length} music files`);
   const audioList = files.map(file => `file '${path.join(AUDIO_DIR, file)}'`).join('\n');
   fs.writeFileSync(path.join(__dirname, 'audio_list.txt'), audioList);
 
@@ -351,10 +351,10 @@ async function startBrowser(reason = 'initial startup') {
     });
     page = await browser.newPage();
     if (PERMALINK_URL) {
-      console.log(`Using custom permalink URL: ${PERMALINK_URL}`);
+      logTS(`Using custom permalink URL: ${PERMALINK_URL}`);
       await page.goto(PERMALINK_URL, { waitUntil: 'networkidle2', timeout: 30000 });
     } else {
-      console.log(`Using URL: ${WS4KP_URL}`);
+      logTS(`Using URL: ${WS4KP_URL}`);
       await page.goto(WS4KP_URL, { waitUntil: 'networkidle2', timeout: 30000 });
       try {
         const zipInput = await page.waitForSelector('input[placeholder="Zip or City, State"], input', { timeout: 5000 });
@@ -472,7 +472,7 @@ function dumpFfmpegDiagnostics(gapMs) {
     logTS('(no ffmpeg stderr output captured yet)');
   } else {
     logTS(`Last ${stderrBuffer.length} ffmpeg stderr line(s):`);
-    stderrBuffer.forEach(line => console.log(`  ffmpeg: ${line}`));
+    stderrBuffer.forEach(line => logTS(`  ffmpeg: ${line}`));
   }
 }
 
@@ -543,7 +543,8 @@ async function startTranscoding() {
     .inputOptions([
       '-f concat',
       '-safe 0',
-      '-stream_loop -1'
+      '-stream_loop -1',
+      '-loglevel debug'
     ])
     .complexFilter([
       `[0:v]scale=${VIEW_DIMENSIONS.width}:${VIEW_DIMENSIONS.height}[v]`,
@@ -700,12 +701,12 @@ app.get('/health',(req,res)=>{
 });
 
 const { cpus, memoryMB } = getContainerLimits();
-console.log(`ws4channels ${VERSION} running with ${cpus} CPU cores, ${memoryMB}MB RAM`);
+logTS(`ws4channels ${VERSION} running with ${cpus} CPU cores, ${memoryMB}MB RAM`);
 
 app.listen(STREAM_PORT, async ()=>{
-  console.log(`Streaming server running on port ${STREAM_PORT}`);
+  logTS(`Streaming server running on port ${STREAM_PORT}`);
   await startTranscoding();
 });
 
-process.on('SIGINT', async ()=>{ console.log('SIGINT received'); await stopTranscoding(); process.exit(); });
-process.on('SIGTERM', async ()=>{ console.log('SIGTERM received'); await stopTranscoding(); process.exit(); });
+process.on('SIGINT', async ()=>{ logTS('SIGINT received'); await stopTranscoding(); process.exit(); });
+process.on('SIGTERM', async ()=>{ logTS('SIGTERM received'); await stopTranscoding(); process.exit(); });
