@@ -111,7 +111,7 @@ services:
       - VIEW_MODE=standard
       - KBPS_BITRATE=1000
       - FRAME_RATE=15
-      - RESTREAM_MUSIC=false
+      - SHOW_SONG_TITLE=false
       - SHUFFLE_MUSIC=true
       - WS4KP_FORECAST_CD=1.0
       - WS4KP_SCANLINES=false
@@ -151,7 +151,7 @@ Then start the container:
 
 	•  CHANNEL_NUMBER: Sets the channel number (default: 275)
   
-	•  RESTREAM_MUSIC: Transcode music produced by WS4KP instead of using the local music folder (default: false)
+	•  SHOW_SONG_TITLE: Populates the "Custom Text" field in WS4K with the currently playing song. (default: false)
   
 	•  SHUFFLE_MUSIC: Randomize the order in which detected mp3s are played (default: false)
   
@@ -210,9 +210,4 @@ By default, the application plays MP3 files from the `music` folder in the proje
 To customize, add your own MP3 files to the `music` folder. Only `.mp3` files are included in the stream.
 If no MP3s are found, the default tracks are used.
 After adding your mp3 tracks to the music folder restart the container so the app will pick up the new music.
-
-Set RESTREAM_MUSIC=true to capture and restream the audio produced by WS4KP instead. When this option is enabled:
-
-    The local music folder is not used.
-    SHUFFLE_MUSIC has no effect.
 

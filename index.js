@@ -1,5 +1,4 @@
 import puppeteer from 'puppeteer';
-import { launch, getStream } from "puppeteer-stream";
 import express from 'express';
 import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
@@ -40,8 +39,7 @@ const HLS_SETUP_DELAY = 2000;
 const KBPS_BITRATE = process.env.KBPS_BITRATE || '1000';
 const FRAME_RATE = Number(process.env.FRAME_RATE) || 15;
 const SHUFFLE_MUSIC = process.env.SHUFFLE_MUSIC.toLowerCase() === 'true' || false;
-const RESTREAM_MUSIC = process.env.RESTREAM_MUSIC.toLowerCase() === 'true' || false;
-const WS4KP_SHOW_SONG_TITLE = process.env.WS4KP_SHOW_SONG_TITLE?.toLowerCase() === 'true' || false;
+const SHOW_SONG_TITLE = process.env.SHOW_SONG_TITLE?.toLowerCase() === 'true' || false;
 const HLS_SEGMENT_SECONDS = 2;
 const sleep = (waitTimeInMs) => new Promise(resolve => setTimeout(resolve, waitTimeInMs));
 
@@ -104,7 +102,6 @@ app.use('/logo', express.static(LOGO_DIR));
 let ffmpegProc = null;
 let browser = null;
 let page = null;
-let audioStream = null;
 let captureProcess = null;
 let captureInterval = null;
 let refreshTimer = null;
@@ -230,7 +227,7 @@ function generateXMLTV(host) {
  */
 async function startSongTitlePolling() {
   if (songTitlePollingInterval) clearInterval(songTitlePollingInterval);
-  if (!WS4KP_SHOW_SONG_TITLE || !page || page.isClosed()) {
+  if (!SHOW_SONG_TITLE || !page || page.isClosed()) {
     return;
   }
 
@@ -422,28 +419,12 @@ async function startBrowser(reason = 'initial startup') {
     }
     await page.setViewport({ ...VIEW_DIMENSIONS });
 
-    if (RESTREAM_MUSIC) {
-      if (audioStream) {
-        audioStream.destroy();
-        audioStream = null;
-      }
-
-      audioStream = await getStream(page, {
-        audio: true,
-        video: false
-      });
-
-      logTS('Using live WS4KP browser audio stream');
-    } else {
-      logTS('Using local music library');
-    }
-
     // Reset capture guards after a fresh browser/page is ready.
     isCapturing = false;
     captureStartedAt = null;
     
     // Start song title polling if enabled
-    if (WS4KP_SHOW_SONG_TITLE) {
+    if (SHOW_SONG_TITLE) {
       await startSongTitlePolling();
     }
     
@@ -545,10 +526,7 @@ function startSegmentWatchdog() {
 async function startTranscoding() {
   await startBrowser('initial startup');
 
-  if (!RESTREAM_MUSIC) {
-    createAudioInputFile();
-  }
-
+  createAudioInputFile();
   scheduleBrowserRefresh();
 
   stderrBuffer = [];
@@ -561,23 +539,12 @@ async function startTranscoding() {
     '-f x11grab',
     `-framerate ${FRAME_RATE}`
   ]);
-
-  if (RESTREAM_MUSIC) {
-    command
-    .input(audioStream)
-    .inputFormat('webm')
-    .inputOptions([
-      '-thread_queue_size 512'
-    ]);
-  } else {
-    command
-    .input(path.join(__dirname, 'audio_list.txt'))
-    .inputOptions([
-      '-f concat',
-      '-safe 0',
-      '-stream_loop -1'
-    ]);
-  }
+  .input(path.join(__dirname, 'audio_list.txt'))
+  .inputOptions([
+    '-f concat',
+    '-safe 0',
+    '-stream_loop -1'
+  ]);
 
   ffmpegProc = command
     .complexFilter([
