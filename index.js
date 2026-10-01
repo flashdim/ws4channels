@@ -242,7 +242,6 @@ async function startBrowser(reason = 'initial startup') {
     logTS(`Launching browser on ${xvfb._display} (launch #${browserRestartCount}, reason: ${reason})`);
     if(browser) await browser.close().catch(()=>{});
     browser = await puppeteer.launch({
-      executablePath: puppeteer.executablePath(),
       headless: false,
       args:[
         '--no-sandbox',
