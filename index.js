@@ -358,8 +358,15 @@ function scheduleBrowserRefresh() {
     return;
   }
   logTS(`Scheduled browser refresh enabled: every ${BROWSER_REFRESH_MINUTES} minute(s)`);
-  refreshTimer = setInterval(() => {
-    startBrowser(`scheduled refresh (${BROWSER_REFRESH_MINUTES}m interval)`);
+  refreshTimer = setInterval(async () => {
+    try {
+      logTS('Restarting transcoding after scheduled browser refresh');
+
+      await stopTranscoding();
+      await startTranscoding();
+    } catch (err) {
+      console.error(`Scheduled refresh failed: ${err.message}`);
+    }
   }, BROWSER_REFRESH_MINUTES * 60 * 1000);
 }
 
