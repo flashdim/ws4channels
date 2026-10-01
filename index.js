@@ -444,7 +444,7 @@ async function startTranscoding() {
         '-thread_queue_size 4096'
       ]);
   } else {
-    ffmpetInput
+    ffmpegInput
     .input(path.join(__dirname,'audio_list.txt'))
     .inputOptions([
       '-f concat',
