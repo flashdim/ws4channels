@@ -632,7 +632,7 @@ async function startTranscoding() {
 
   createAudioInputFile();
   scheduleBrowserRefresh();
-  startZipRotation();
+  if (ZIP_CODE.length > 1) startZipRotation();
 
   stderrBuffer = [];
   lastProgress = null;
