@@ -17,7 +17,7 @@ process.setMaxListeners(50);
 const app = express();
 const __dirname = path.dirname(new URL(import.meta.url).pathname)
 const VERSION = 'vAPP_VERSION';
-const ZIP_CODES = (process.env.ZIP_CODE || '90210').split(',').map(z => z.trim());
+const ZIP_CODE = (process.env.ZIP_CODE || '90210').split(',').map(z => z.trim());
 const ZIP_ROTATION_MINUTES = parseInt(process.env.ZIP_ROTATION_MINUTES || '8');
 const WS4KP_HOST = process.env.WS4KP_HOST || 'localhost';
 const WS4KP_PORT = process.env.WS4KP_PORT || '8080';
@@ -307,13 +307,13 @@ function stopSongTitlePolling() {
  * Rotates to the next ZIP code in the array and types it into the simulator.
  */
 async function rotateZipCode() {
-  if (!page || page.isClosed() || !ZIP_CODES || ZIP_CODES.length <= 1) {
+  if (!page || page.isClosed() || !ZIP_CODE || ZIP_CODE.length <= 1) {
     return;
   }
 
   // 2. Increment the index (wrapping around to 0 using modulo)
-  currentZipIndex = (currentZipIndex + 1) % ZIP_CODES.length;
-  const nextZip = ZIP_CODES[currentZipIndex];
+  currentZipIndex = (currentZipIndex + 1) % ZIP_CODE.length;
+  const nextZip = ZIP_CODE[currentZipIndex];
 
   try {
     logTS(`🔄 Rotating location to: ${nextZip}`);
@@ -357,7 +357,7 @@ function startZipRotation() {
     return;
   }
 
-  logTS(`ZIP rotation enabled: every ${ZIP_ROTATION_MINUTES} minute(s). List: [${ZIP_CODES.join(', ')}]`);
+  logTS(`ZIP rotation enabled: every ${ZIP_ROTATION_MINUTES} minute(s). List: [${ZIP_CODE.join(', ')}]`);
 
   zipRotationInterval = setInterval(async () => {
     await rotateZipCode();
@@ -417,7 +417,7 @@ async function startBrowser(reason = 'initial startup') {
         const zipInput = await page.waitForSelector('input[placeholder="Zip or City, State"], input', { timeout: 5000 });
         if (zipInput) {
           // type the zip code
-          await zipInput.type(ZIP_CODE, { delay: 100 });
+          await zipInput.type(ZIP_CODE[currentZipIndex], { delay: 100 });
           // wit for suggestions box
           await page.waitForSelector('#divQuery .autocomplete-suggestions .suggestion');
           // select the first suggestion
