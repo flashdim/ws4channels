@@ -245,38 +245,38 @@ async function startSongTitlePolling() {
       // Only update if the title has changed
       if (songNowPlaying !== songWasPlaying) {
         logTS(`Song changed: "${songWasPlaying}" → "${songNowPlaying}"`);
-        songWasPlaying = songNowPlaying;
-
         // Update the custom text input and enable/set it
         try {
-          // Ensure custom text checkbox is enabled
-          const checkbox = await page.$('#settings-customTextEnable-checkbox');
-          if (checkbox) {
-            const isChecked = await checkbox.evaluate(el => el.checked);
-            if (!isChecked) {
-              await checkbox.click();
-              await sleep(100);
+          // Use evaluate to interact with the DOM directly.
+          // This bypasss all "Node is not clickable" and "Overlay" errors.
+          await page.evaluate((songName) => {
+            const checkbox = document.querySelector('#settings-customTextEnable-checkbox');
+            const textInput = document.querySelector('#settings-customText-string');
+            const setButton = document.querySelector('#settings-customText-button');
+
+            if (checkbox) {
+              // Force the checkbox to be checked via JS
+              checkbox.checked = true;
+              // Trigger events so the simulator's internal logic knows it changed
+              checkbox.dispatchEvent(new Event('change', { bubbles: true }));
             }
-          }
 
-          // Set the text input value
-          const textInput = await page.$('#settings-customText-string');
-          if (textInput) {
-            // Clear the input and type the new title
-            await textInput.evaluate((el, text) => {
-              el.value = text;
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-            }, '🎵: '+songNowPlaying);
-            await sleep(100);
-          }
+            if (textInput) {
+              // Set the value directly
+              textInput.value = 'Now Playing: ' + songName;
+              textInput.dispatchEvent(new Event('input', { bubbles: true }));
+              textInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
 
-          // Click the Set button
-          const setButton = await page.$('#settings-customText-button');
-          if (setButton) {
-            await setButton.click();
-            logTS(`Updated custom text to: "${songNowPlaying}"`);
-          }
+            if (setButton) {
+              // Click the button via JS (ignores overlays)
+              setButton.click();
+            }
+          }, songNowPlaying);
+
+          logTS(`Successfully updated text to: "Now Playing: ${songNowPlaying}"`);
+          songWasPlaying = songNowPlaying; // ONLY update success state here
+
         } catch (err) {
           logTS(`Failed to update custom text: ${err.message}`);
         }
@@ -577,8 +577,7 @@ async function startTranscoding() {
       if (songMatch && songMatch[1].endsWith('.mp3')) {
         const fullPath = songMatch[1];
         // Store the full path or just the filename
-        songNowPlaying = path.basename(fullPath);
-
+        songNowPlaying = path.basename(fullPath,'.mp3');
         logTS(`🎵: ${songNowPlaying}`);
       }
     })
