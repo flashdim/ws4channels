@@ -105,7 +105,7 @@ services:
       - PGID=${PGID}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - TZ=America/Detroit
-      - ZIP_CODE=63101
+      - ZIP_CODE=63101,90210
       - WS4KP_HOST=ws4kp
       - WS4KP_PORT=8080
       - VIEW_MODE=standard
@@ -141,10 +141,6 @@ Then start the container:
 
 # Environment Variables
 
-	•  --cpus: CPU limit (default: 1.0)
- 
-	•  --memory: RAM limit in MB (default: 1096)
- 
 	•  KBPS_BITRATE: Stream bitrate (default: 1000)
 
 	•  FRAME_RATE: Stream frame rate (default: 15)
@@ -157,7 +153,7 @@ Then start the container:
   
 	•  PERMALINK_URL (optional): Pass configuration parameters via permalink generated from ws4kp. You can use that, or the individual settings below.
 
-	•  ZIP_CODE: Your ZIP code (default: 90210)
+	•  ZIP_CODE: Your ZIP code, or a list of ZIP codes to rotate "on the 8s". (default: 90210)
 
 	•  WS4KP_HOST: Host running WS4KP (default: localhost)
 
