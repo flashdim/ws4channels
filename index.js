@@ -18,7 +18,6 @@ const app = express();
 const __dirname = path.dirname(new URL(import.meta.url).pathname)
 const VERSION = 'vAPP_VERSION';
 const ZIP_CODE = (process.env.ZIP_CODE || '90210').split(',').map(z => z.trim());
-const ZIP_ROTATION_MINUTES = parseInt(process.env.ZIP_ROTATION_MINUTES || '8');
 const WS4KP_HOST = process.env.WS4KP_HOST || 'localhost';
 const WS4KP_PORT = process.env.WS4KP_PORT || '8080';
 const STREAM_PORT = process.env.STREAM_PORT || '9798';
@@ -47,7 +46,7 @@ const sleep = (waitTimeInMs) => new Promise(resolve => setTimeout(resolve, waitT
 // Optional proactive browser refresh. If set to a number > 0, the browser
 // will be relaunched on this interval (minutes) regardless of whether
 // anything has gone wrong. 0 = disabled (default).
-const BROWSER_REFRESH_MINUTES = parseInt(process.env.BROWSER_REFRESH_MINUTES || '0', 10);
+const BROWSER_REFRESH_MINUTES = parseInt(process.env.BROWSER_REFRESH_MINUTES || '0');
 
 // Segment freshness watchdog: HLS segments should land roughly every
 // HLS_SEGMENT_SECONDS. If we go this long without any output file's mtime
@@ -114,7 +113,7 @@ let lastLoggedTime = null;
 let songNowPlaying = 'Starting stream...';
 let songWasPlaying = 'Starting stream...';
 let currentZipIndex = 0;
-let zipRotationInterval = null;
+let zipRotationTimeout = null;
 
 // --- State for backpressure + overlap protection + restart diagnostics ---
 let isCapturing = false;         // prevents overlapping capture calls
@@ -318,31 +317,32 @@ async function rotateZipCode() {
   try {
     logTS(`🔄 Rotating location to: ${nextZip}`);
 
-    // 3. Perform the "Soft Rotation" via DOM manipulation
-    // We use evaluate to bypass all "element not clickable" overlay errors
+    // 1. Use evaluate to change the text (we know this works)
     await page.evaluate((zip) => {
       const input = document.querySelector('#txtLocation');
       if (input) {
-        // Clear and set the new value
         input.value = '';
         input.value = zip;
-
-        // Dispatch events so the simulator's JS detects the change
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
       }
     }, nextZip);
 
-    // 4. Trigger the 'Submit' action
-    // In the HTML, 'btnGetLatLng' is the submit button for the form
+    // 2. Use evaluate to trigger the click (bypasses the overlay error)
     const submitButton = await page.$('#btnGetLatLng');
     if (submitButton) {
+      // THE FIX: Use evaluate to trigger the click event directly on the DOM element
+      // This ignores the fact that the 'loading' or 'progress' div is covering it.
+      await submitButton.evaluate(el => el.click());
+      logTS(`✅ Location rotation to ${nextZip} complete.`);
+    } else {
+      // Fallback: If the button is truly gone from the DOM
       await page.keyboard.press('Enter');
       logTS(`✅ Location rotation to ${nextZip} complete (via Enter key).`);
     }
 
-    // 5. Wait a moment for the simulator to start loading the new weather data
-    await sleep(3000);
+    // 3. Wait for the simulator to process the new location
+    await sleep(5000);
 
   } catch (err) {
     logTS(`❌ Failed to rotate ZIP code: ${err.message}`);
@@ -350,18 +350,65 @@ async function rotateZipCode() {
   }
 }
 
-function startZipRotation() {
-  if (zipRotationInterval) clearInterval(zipRotationInterval);
-  if (ZIP_ROTATION_MINUTES <= 0) {
-    logTS('ZIP rotation disabled (ZIP_ROTATION_MINUTES not set)');
-    return;
+/**
+ * Calculates the delay in ms until the next minute ending in 8, at the 00 second mark.
+ * Example: If it is 14:12:30, the next target is 14:18:00.
+ */
+function getMsUntilNext8MinWindow() {
+  const now = new Date();
+  const currentMinutes = now.getMinutes();
+  const currentSeconds = now.getSeconds();
+
+  // 1. Determine the target minute (the next multiple of 10, plus 8)
+  let targetMinutes = (Math.floor(currentMinutes / 10) * 10) + 8;
+
+  // 2. If the target minute has already passed in this hour, move to the next 10-min block
+  if (currentMinutes >= targetMinutes) {
+    targetMinutes += 10;
   }
 
-  logTS(`ZIP rotation enabled: every ${ZIP_ROTATION_MINUTES} minute(s). List: [${ZIP_CODE.join(', ')}]`);
+  // 3. Create a Date object for the target time in the CURRENT hour
+  const targetDate = new Date(now);
+  targetDate.setMinutes(targetMinutes);
+  targetDate.setSeconds(0);
+  targetDate.setMilliseconds(0);
 
-  zipRotationInterval = setInterval(async () => {
-    await rotateZipCode();
-  }, ZIP_ROTATION_MINUTES * 60 * 1000);
+  // 4. If the target minutes reached 60, the Date object handles the hour rollover automatically.
+  // However, if the targetMinutes was 60, it means we need to look at the 08 mark of the NEXT hour.
+  if (targetMinutes >= 60) {
+    targetDate.setMinutes(8);
+    targetDate.setHours(now.getHours() + 1);
+  }
+
+  const delay = targetDate.getTime() - now.getTime();
+
+  // Add a small 500ms buffer to ensure the clock has actually ticked over
+  // and we don't trigger the function a few milliseconds too early.
+  return delay + 500;
+}
+
+/**
+ * A recursive scheduler that triggers rotateZipCode at precise 10-minute clock intervals.
+ */
+async function startZipRotation() {
+  // Clean up any existing rotation timer to prevent duplicates
+  if (zipRotationTimeout) clearTimeout(zipRotationTimeout);
+
+  const delay = getMsUntilNext8MinWindow();
+
+  const targetDate = new Date(Date.now() + delay);
+  logTS(`⏰ Next ZIP rotation scheduled for: ${targetDate.toLocaleTimeString()} (In ${Math.round(delay/1000)}s)`);
+
+  zipRotationTimeout = setTimeout(async () => {
+    try {
+      await rotateZipCode();
+    } catch (err) {
+      logTS(`❌ Rotation error: ${err.message}`);
+    } finally {
+      // RECURSION: Schedule the next rotation immediately
+      startZipRotation();
+    }
+  }, delay);
 }
 
 async function startBrowser(reason = 'initial startup') {
@@ -418,7 +465,7 @@ async function startBrowser(reason = 'initial startup') {
         if (zipInput) {
           // type the zip code
           await zipInput.type(ZIP_CODE[currentZipIndex], { delay: 100 });
-          // wit for suggestions box
+          // wait for suggestions box
           await page.waitForSelector('#divQuery .autocomplete-suggestions .suggestion');
           // select the first suggestion
           await page.keyboard.press('ArrowDown');
@@ -714,7 +761,7 @@ async function stopTranscoding(){
   if(ffmpegProc) ffmpegProc.kill('SIGINT'); ffmpegProc=null;
   if(browser) await browser.close().catch(()=>{}); browser=null;
   if(xvfb) await xvfb.stop(); xvfb=null;
-  if(zipRotationInterval) clearInterval(zipRotationInterval); zipRotationInterval=null;
+  if(zipRotationTimeout) clearTimeout(zipRotationTimeout); zipRotationTimeout=null;
 }
 
 app.get('/playlist.m3u',(req,res)=>{
