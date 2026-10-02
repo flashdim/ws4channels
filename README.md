@@ -142,10 +142,6 @@ Then start the container:
 
 # Environment Variables
 
-	•  --cpus: CPU limit (default: 1.0)
- 
-	•  --memory: RAM limit in MB (default: 1096)
- 
 	•  KBPS_BITRATE: Stream bitrate (default: 1000)
 
 	•  FRAME_RATE: Stream frame rate (default: 15)
