@@ -7,7 +7,10 @@ This service creates an M3U video stream of the forecast using Puppeteer to scre
 
 ### Changes from source repo
 
-This version is forked from: https://github.com/rice9797/ws4channels. It adds ffmpeg screen capturing for improved performance, and extra environment variables.
+This version is forked from: https://github.com/rice9797/ws4channels. It adds:
+- ffmpeg x11grab screen capturing for improved performance/speed
+- ffmpeg stops when there are no active connections, saving CPU
+- Extra environment variables to support native ws4kp toggles
 
 ## Prerequisites
 
