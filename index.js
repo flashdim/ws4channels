@@ -35,7 +35,6 @@ const WS4KP_ALMANAC = process.env.WS4KP_ALMANAC.toLowerCase() === 'true' || fals
 const WS4KP_RADAR = process.env.WS4KP_RADAR.toLowerCase() === 'true' || true;
 const WS4KP_URL = `http://${WS4KP_HOST}:${WS4KP_PORT}?radar=${WS4KP_RADAR}&almanac=${WS4KP_ALMANAC}&extended-forecast=${WS4KP_EXTENDED_FORECAST}&local-forecast=${WS4KP_LOCAL_FORECAST}&regional-forecast=${WS4KP_REGIONAL_FORECAST}&travel=${WS4KP_TRAVEL}&hourly-graph=${WS4KP_HOURLY_GRAPH}&hourly=${WS4KP_HOURLY}&latest-observations=${WS4KP_LATEST_OBSERVATIONS}&current-weather=${WS4KP_CURRENT_WEATHER}&scanLines=${WS4KP_SCANLINES}&speed=${WS4KP_FORECAST_CD}&spc-outlook=false`;
 const PERMALINK_URL = process.env.PERMALINK_URL || null;
-const HLS_SETUP_DELAY = 2000;
 const KBPS_BITRATE = process.env.KBPS_BITRATE || '1000';
 const FRAME_RATE = Number(process.env.FRAME_RATE) || 15;
 const SHUFFLE_MUSIC = process.env.SHUFFLE_MUSIC.toLowerCase() === 'true' || false;
@@ -100,6 +99,7 @@ app.use('/stream', express.static(OUTPUT_DIR));
 app.use('/logo', express.static(LOGO_DIR));
 
 let ffmpegProc = null;
+let hlsWatcher = null;
 let browser = null;
 let page = null;
 let captureProcess = null;
@@ -674,11 +674,31 @@ async function startTranscoding() {
     .on('start',(cmd)=>{
       logTS(`Started FFmpeg`);
       logTS(`FFmpeg command: ${cmd}`);
-      setTimeout(()=>{
+
+      // Check if the file already exists (it might from a previous rapid restart)
+      if (fs.existsSync(HLS_FILE)) {
         isStreamReady = true;
         isCapturing = true;
         captureStartedAt = Date.now();
-      },HLS_SETUP_DELAY);
+        logTS('HLS playlist detected immediately.');
+      } else {
+        // Start watching the OUTPUT_DIR for the creation of the m3u8 file
+        logTS('Waiting for HLS playlist creation...');
+        hlsWatcher = fs.watch(OUTPUT_DIR, (eventType, filename) => {
+          if (filename === 'stream.m3u8') {
+            logTS('HLS playlist detected via watcher.');
+            isStreamReady = true;
+            isCapturing = true;
+            captureStartedAt = Date.now();
+
+            // Stop watching once we've found it to prevent memory leaks
+            if (hlsWatcher) {
+              hlsWatcher.close();
+              hlsWatcher = null;
+            }
+          }
+        });
+      }
     })
     .on('stderr', line => {
       // Parse the line for the "Opening" event
@@ -755,13 +775,39 @@ async function startTranscoding() {
 
 async function stopTranscoding(){
   stopSongTitlePolling();
-  if(captureInterval) clearInterval(captureInterval); captureInterval=null; isStreamReady=false;
-  if(refreshTimer) clearInterval(refreshTimer); refreshTimer=null;
-  if(segmentWatchdogInterval) clearInterval(segmentWatchdogInterval); segmentWatchdogInterval=null;
-  if(ffmpegProc) ffmpegProc.kill('SIGINT'); ffmpegProc=null;
-  if(browser) await browser.close().catch(()=>{}); browser=null;
-  if(xvfb) await xvfb.stop(); xvfb=null;
-  if(zipRotationTimeout) clearTimeout(zipRotationTimeout); zipRotationTimeout=null;
+  if(captureInterval) {
+    clearInterval(captureInterval);
+    captureInterval = null;
+    isStreamReady = false;
+  }
+  if(refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+  if(segmentWatchdogInterval) {
+    clearInterval(segmentWatchdogInterval);
+    segmentWatchdogInterval = null;
+  }
+  if(browser) {
+    await browser.close().catch(()=>{});
+    browser = null;
+  }
+  if(xvfb) {
+    await xvfb.stop();
+    xvfb = null;
+  }
+  if(zipRotationTimeout) {
+    clearTimeout(zipRotationTimeout);
+    zipRotationTimeout = null;
+  }
+  if (hlsWatcher) {
+    hlsWatcher.close();
+    hlsWatcher = null;
+  }
+  if(ffmpegProc) {
+    ffmpegProc.kill('SIGINT');
+    ffmpegProc = null;
+  }
 }
 
 app.get('/playlist.m3u',(req,res)=>{
