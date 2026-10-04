@@ -35,7 +35,6 @@ const WS4KP_ALMANAC = process.env.WS4KP_ALMANAC.toLowerCase() === 'true' || fals
 const WS4KP_RADAR = process.env.WS4KP_RADAR.toLowerCase() === 'true' || true;
 const WS4KP_URL = `http://${WS4KP_HOST}:${WS4KP_PORT}?radar=${WS4KP_RADAR}&almanac=${WS4KP_ALMANAC}&extended-forecast=${WS4KP_EXTENDED_FORECAST}&local-forecast=${WS4KP_LOCAL_FORECAST}&regional-forecast=${WS4KP_REGIONAL_FORECAST}&travel=${WS4KP_TRAVEL}&hourly-graph=${WS4KP_HOURLY_GRAPH}&hourly=${WS4KP_HOURLY}&latest-observations=${WS4KP_LATEST_OBSERVATIONS}&current-weather=${WS4KP_CURRENT_WEATHER}&scanLines=${WS4KP_SCANLINES}&speed=${WS4KP_FORECAST_CD}&spc-outlook=false`;
 const PERMALINK_URL = process.env.PERMALINK_URL || null;
-const HLS_SETUP_DELAY = 2000;
 const KBPS_BITRATE = process.env.KBPS_BITRATE || '1000';
 const FRAME_RATE = Number(process.env.FRAME_RATE) || 15;
 const SHUFFLE_MUSIC = process.env.SHUFFLE_MUSIC.toLowerCase() === 'true' || false;
@@ -96,10 +95,8 @@ const VIEW_DIMENSIONS = (()=>{
 
 [OUTPUT_DIR, AUDIO_DIR, LOGO_DIR].forEach(dir => { if (!fs.existsSync(dir)) fs.mkdirSync(dir); });
 
-app.use('/stream', express.static(OUTPUT_DIR));
-app.use('/logo', express.static(LOGO_DIR));
-
 let ffmpegProc = null;
+let hlsWatcher = null;
 let browser = null;
 let page = null;
 let captureProcess = null;
@@ -137,7 +134,13 @@ let segmentStallActive = false;     // whether we're currently in a detected sta
 let segmentStallWarningsIssued = 0; // how many distinct stall episodes we've logged
 let lastStallDumpAt = 0;            // throttles repeated stderr dumps during one long stall
 
+// --- Idle stream management (Heartbeat-based) ---
+let streamActive = false;
+let streamGraceTimer = null;
+const STREAM_GRACE_PERIOD_S = 30; // HLS playlists refresh every 10s; 30s prevents thrashing
+
 const waitFor = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 
 function logTS(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
@@ -411,6 +414,30 @@ async function startZipRotation() {
   }, delay);
 }
 
+// --- Handles connection tracking on the /stream endpoint
+app.use('/stream', (req, res, next) => {
+  // Only track the main playlist request, NOT the .ts segment downloads
+  if (req.url.endsWith('stream.m3u8')) {
+    if (!streamActive) {
+      streamActive = true;
+      logTS('📡 Stream client connected — starting ffmpeg');
+      ensureFfmpeg();
+    }
+
+    // HLS players poll the playlist periodically to check for updates.
+    // Reset the grace timer on every poll so we don't shut down while a client is watching.
+    clearTimeout(streamGraceTimer);
+    streamGraceTimer = setTimeout(async () => {
+      streamActive = false;
+      logTS('⏳ No playlist requests for grace period — pausing ffmpeg');
+      await stopFfmpeg();
+    }, STREAM_GRACE_PERIOD_S * 1000);
+  }
+
+  // IMPORTANT: Pass control to the static file server to actually deliver the files
+  next();
+});
+
 async function startBrowser(reason = 'initial startup') {
   // Hard lock: only one browser launch can be in progress at a time.
   if (isRestartingBrowser) {
@@ -627,141 +654,130 @@ function startSegmentWatchdog() {
   }, SEGMENT_CHECK_INTERVAL_MS);
 }
 
-async function startTranscoding() {
-  await startBrowser('initial startup');
+async function ensureFfmpeg() {
+  if (ffmpegProc) return; // Already running
 
-  createAudioInputFile();
-  scheduleBrowserRefresh();
-  if (ZIP_CODE.length > 1) startZipRotation();
+  logTS('Starting ffmpeg and capture loop...');
 
-  stderrBuffer = [];
-  lastProgress = null;
-  lastProgressAt = null;
-
-  ffmpegProc = ffmpeg()
-    .input(xvfb._display + '.0')
-    .inputOptions([
-      '-f x11grab',
-      `-framerate ${FRAME_RATE}`
-    ])
-    .input(path.join(__dirname, 'audio_list.txt'))
-    .inputOptions([
-      '-f concat',
-      '-safe 0',
-      '-stream_loop -1',
-      '-loglevel debug'
-    ])
-    .complexFilter([
-      `[0:v]scale=${VIEW_DIMENSIONS.width}:${VIEW_DIMENSIONS.height}[v]`,
-      '[1:a]aresample=48000,volume=0.5[a]'
-    ])
-    .outputOptions([
-      '-map [v]',
-      '-map [a]',
-      '-c:v libx264',
-      '-preset veryfast',
-      '-c:a aac',
-      '-b:a 128k',
-      '-rc_mode 2',
-      `-g ${FRAME_RATE * HLS_SEGMENT_SECONDS}`,
-      `-b:v ${KBPS_BITRATE}k`,
-      '-f hls',
-      `-hls_time ${HLS_SEGMENT_SECONDS}`,
-      '-hls_list_size 6',
-      '-hls_flags delete_segments'
-    ])
-    .output(HLS_FILE)
-    .on('start',(cmd)=>{
-      logTS(`Started FFmpeg`);
-      logTS(`FFmpeg command: ${cmd}`);
-      setTimeout(()=>{
-        isStreamReady = true;
-        isCapturing = true;
-        captureStartedAt = Date.now();
-      },HLS_SETUP_DELAY);
-    })
-    .on('stderr', line => {
-      // Parse the line for the "Opening" event
-      // FFmpeg logs: [concat @ 0x...] Opening '/app/music/Song.mp3'
-      const songMatch = line.match(/Opening '(.+?)'/);
-
-      if (songMatch && songMatch[1].endsWith('.mp3')) {
-        const fullPath = songMatch[1];
-        // Store the full path or just the filename
-        songNowPlaying = path.basename(fullPath,'.mp3');
-      }
-    })
-    .on('progress', p => {
-      lastProgress = p;
-      lastProgressAt = Date.now();
-
-      // Find interval values - only measure totalFrameTimeMs if we have a valid start time
-      totalFrameTimeMs =  captureStartedAt? Date.now() - captureStartedAt : null;
-      const frameCount = lastProgress ? lastProgress.frames : 0;
-      avgFrameTimeMs = frameCount > 0 ? Math.round(totalFrameTimeMs / frameCount) : null;
-      const lastFfmpegTimemark = lastProgress ? lastProgress.timemark : null;
-      if (avgFrameTimeMs > maxFrameTimeMs) maxFrameTimeMs = avgFrameTimeMs;
-
-      // Every minute (60000ms), log a quick health summary.
-      //  We go by seconds because ffmpeg.on('progress') reports unevenly every 30ms or so.
-      //  Then, we use lastLoggedTime so we don't duplicate logs.'
-      let elapsedSeconds = Math.floor(totalFrameTimeMs/1000);
-      if (((elapsedSeconds % 60) === 0) && (lastLoggedTime != elapsedSeconds)) {
-        lastLoggedTime = elapsedSeconds;
-        const sinceProgress = lastProgressAt ? (Date.now() - lastProgressAt) : null;
-        logTS(`Health check: captureStartedAt=${captureStartedAt}, totalFrameTimeMs=${totalFrameTimeMs}, frames=${frameCount}, avgFrameTimeMs=${avgFrameTimeMs}, maxFrameTimeMs=${maxFrameTimeMs}, skippedRestarting=${framesSkippedRestarting}, browserRestarts=${browserRestartCount}, segmentStallWarnings=${segmentStallWarningsIssued}, msSinceLastFfmpegProgress=${sinceProgress}`);
-      }
-    })
-    .on('error', async err=>{
-      logTS(`FFmpeg error: ${err.message}`);
-      await stopTranscoding();
-      startTranscoding();
-    })
-    .on('end',()=>{
-      ffmpegProc = null;
-      isStreamReady = false;
-      isCapturing = false;
-      captureStartedAt = null;
-    });
-
-  startSegmentWatchdog();
-
-  captureInterval = setInterval(async ()=>{
-    if(!ffmpegProc || !page) return;
-
-    // A browser relaunch is already in progress — don't touch the page or
-    // trigger another one.
+  // 1. Start capture loop
+  captureInterval = setInterval(async () => {
+    if (!ffmpegProc || !page) return;
     if (isRestartingBrowser) {
       framesSkippedRestarting++;
       return;
     }
-
-    try{
-      if(page.isClosed()){
+    try {
+      if (page.isClosed()) {
         isCapturing = false;
         captureStartedAt = null;
         await startBrowser('page was closed');
         return;
       }
-    } catch(err){
+    } catch (err) {
       console.warn('Capture error, retrying...', err.message);
       await startBrowser(`capture error: ${err.message}`);
       return;
     }
-  },1000/FRAME_RATE); // Only run this once per expected frame duration in milliseconds
+  }, 1000 / FRAME_RATE);
 
+  // 2. Start ffmpeg
+  ffmpegProc = ffmpeg()
+  .input(xvfb._display + '.0')
+  .inputOptions(['-f x11grab', `-framerate ${FRAME_RATE}`])
+  .input(path.join(__dirname, 'audio_list.txt'))
+  .inputOptions(['-f concat', '-safe 0', '-stream_loop -1', '-loglevel debug'])
+  .complexFilter([
+    `[0:v]scale=${VIEW_DIMENSIONS.width}:${VIEW_DIMENSIONS.height}[v]`,
+    '[1:a]aresample=48000,volume=0.5[a]'
+  ])
+  .outputOptions([
+    '-map [v]', '-map [a]', '-c:v libx264', '-preset veryfast', '-c:a aac',
+    '-b:a 128k', '-rc_mode 2', `-g ${FRAME_RATE * HLS_SEGMENT_SECONDS}`,
+    `-b:v ${KBPS_BITRATE}k`, '-f hls', `-hls_time ${HLS_SEGMENT_SECONDS}`,
+    '-hls_list_size 6', '-hls_flags delete_segments'
+  ])
+  .output(HLS_FILE)
+  .on('start', (cmd) => {
+    logTS(`Started FFmpeg`);
+    logTS(`FFmpeg command: ${cmd}`);
+    isStreamReady = true;
+    isCapturing = true;
+    captureStartedAt = Date.now();
+
+    if (!hlsWatcher && !fs.existsSync(HLS_FILE)) {
+      logTS('Waiting for HLS playlist creation...');
+      hlsWatcher = fs.watch(OUTPUT_DIR, (eventType, filename) => {
+        if (filename === 'stream.m3u8') {
+          logTS('HLS playlist detected via watcher.');
+          isStreamReady = true;
+          captureStartedAt = Date.now();
+          if (hlsWatcher) { hlsWatcher.close(); hlsWatcher = null; }
+        }
+      });
+    }
+  })
+  .on('stderr', (line) => {
+    const songMatch = line.match(/Opening '(.+?)'/);
+    if (songMatch && songMatch[1].endsWith('.mp3')) {
+      songNowPlaying = path.basename(songMatch[1], '.mp3');
+    }
+  })
+  .on('progress', (p) => {
+    lastProgress = p;
+    lastProgressAt = Date.now();
+    totalFrameTimeMs = captureStartedAt ? Date.now() - captureStartedAt : null;
+    const frameCount = lastProgress ? lastProgress.frames : 0;
+    avgFrameTimeMs = frameCount > 0 ? Math.round(totalFrameTimeMs / frameCount) : null;
+    if (avgFrameTimeMs > maxFrameTimeMs) maxFrameTimeMs = avgFrameTimeMs;
+
+    let elapsedSeconds = Math.floor(totalFrameTimeMs / 1000);
+    if (((elapsedSeconds % 60) === 0) && (lastLoggedTime != elapsedSeconds)) {
+      lastLoggedTime = elapsedSeconds;
+      logTS(`Health check: frames=${frameCount}, avgFrameTimeMs=${avgFrameTimeMs}, maxFrameTimeMs=${maxFrameTimeMs}`);
+    }
+  })
+  .on('error', async (err) => {
+    logTS(`FFmpeg error: ${err.message}`);
+    await stopFfmpeg();
+    if (streamActive) ensureFfmpeg(); // Only restart if someone is watching
+  })
+  .on('end', () => {
+    ffmpegProc = null;
+    isStreamReady = false;
+    isCapturing = false;
+    captureStartedAt = null;
+  });
+
+  startSegmentWatchdog();
   ffmpegProc.run();
 }
 
-async function stopTranscoding(){
+async function stopFfmpeg() {
+  logTS('Pausing ffmpeg...');
+  if (captureInterval) { clearInterval(captureInterval); captureInterval = null; }
+  if (ffmpegProc) { ffmpegProc.kill('SIGINT'); ffmpegProc = null; }
+  if (segmentWatchdogInterval) { clearInterval(segmentWatchdogInterval); segmentWatchdogInterval = null; }
+  if (hlsWatcher) { hlsWatcher.close(); hlsWatcher = null; }
+
+  isStreamReady = false;
+  isCapturing = false;
+  captureStartedAt = null;
+  lastProgress = null;
+  lastProgressAt = null;
+  lastSegmentChangeAt = null;
+}
+
+async function startTranscoding() {
+  await startBrowser('initial startup');
+  scheduleBrowserRefresh();
+  if (ZIP_CODE.length > 1) startZipRotation();
+}
+
+async function stopTranscoding() {
   stopSongTitlePolling();
-  if(captureInterval) clearInterval(captureInterval); captureInterval=null; isStreamReady=false;
-  if(refreshTimer) clearInterval(refreshTimer); refreshTimer=null;
-  if(segmentWatchdogInterval) clearInterval(segmentWatchdogInterval); segmentWatchdogInterval=null;
-  if(ffmpegProc) ffmpegProc.kill('SIGINT'); ffmpegProc=null;
-  if(browser) await browser.close().catch(()=>{}); browser=null;
-  if(xvfb) await xvfb.stop(); xvfb=null;
-  if(zipRotationTimeout) clearTimeout(zipRotationTimeout); zipRotationTimeout=null;
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  if (zipRotationTimeout) { clearTimeout(zipRotationTimeout); zipRotationTimeout = null; }
+  await stopFfmpeg();
 }
 
 app.get('/playlist.m3u',(req,res)=>{
@@ -806,8 +822,19 @@ app.get('/health',(req,res)=>{
 const { cpus, memoryMB } = getContainerLimits();
 logTS(`ws4channels ${VERSION} running with ${cpus} CPU cores, ${memoryMB}MB RAM`);
 
+// Allow Serving the HLS files
+app.use('/stream', express.static(OUTPUT_DIR));
+
+// Allow serving up the channel logo
+app.use('/logo', express.static(LOGO_DIR));
+
+// Get ready to listen soon
+createAudioInputFile();
+logTS(`ws4channels ${VERSION} running with ${cpus} CPU cores, ${memoryMB}MB RAM`);
+logTS(`Streaming server running on port ${STREAM_PORT}`);
+logTS('Idle — pipeline will start ffmpeg on first client connection');
+
 app.listen(STREAM_PORT, async ()=>{
-  logTS(`Streaming server running on port ${STREAM_PORT}`);
   await startTranscoding();
 });
 
