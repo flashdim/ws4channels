@@ -94,6 +94,23 @@ const VIEW_DIMENSIONS = (()=>{
   }
 })();
 
+// --- Hardware Acceleration Configuration ---
+const FFMPEG_ENCODER = (process.env.FFMPEG_ENCODER || 'software').toLowerCase();
+const ENCODER_MAP = {
+  'vaapi': {
+    videoCodec: '-c:v h264_vaapi',
+    extraFlags: []
+  },
+  'qsv': {
+    videoCodec: '-c:v h264_qsv',
+    extraFlags: []
+  },
+  'software': {
+    videoCodec: '-c:v libx264',
+    extraFlags: ['-preset veryfast']
+  }
+};
+
 [OUTPUT_DIR, AUDIO_DIR, LOGO_DIR].forEach(dir => { if (!fs.existsSync(dir)) fs.mkdirSync(dir); });
 
 app.use('/stream', express.static(OUTPUT_DIR));
@@ -630,6 +647,14 @@ function startSegmentWatchdog() {
 async function startTranscoding() {
   await startBrowser('initial startup');
 
+  // Determine which encoder name to use (check for the fallback override)
+  const activeEncoderName = global.FFMPEG_ENCODER_OVERRIDE || FFMPEG_ENCODER;
+
+  // Resolve the actual configuration object based on the active name
+  const currentEncoderConfig = ENCODER_MAP[activeEncoderName] || ENCODER_MAP['software'];
+
+  logTS(`Starting FFmpeg with encoder: ${activeEncoderName}`);
+
   createAudioInputFile();
   scheduleBrowserRefresh();
   if (ZIP_CODE.length > 1) startZipRotation();
@@ -638,11 +663,30 @@ async function startTranscoding() {
   lastProgress = null;
   lastProgressAt = null;
 
+  // Define common options used for encoding
+  const commonOutputOptions = [
+    '-map [v]',
+    '-map [a]',
+    '-c:a aac',
+    '-b:a 128k',
+    '-rc_mode 2',
+    `-g ${FRAME_RATE * HLS_SEGMENT_SECONDS}`,
+    `-b:v ${KBPS_BITRATE}k`,
+    '-f hls',
+    `-hls_time ${HLS_SEGMENT_SECONDS}`,
+    '-hls_list_size 6',
+    '-hls_flags delete_segments'
+  ];
+
+  // Merge any hardware encoder specific parts
+  const encoderOptions = [currentEncoderConfig.videoCodec, ...currentEncoderConfig.extraFlags];
+
   ffmpegProc = ffmpeg()
     .input(xvfb._display + '.0')
     .inputOptions([
-      '-f x11grab',
-      `-framerate ${FRAME_RATE}`
+      ...(activeEncoderName === 'vaapi'
+      ? ['-f x11grab', `-framerate ${FRAME_RATE}`, '-hwaccel vaapi', '-vaapi_device /dev/dri/renderD128', '-hwaccel_output_format vaapi']
+      : ['-f x11grab', `-framerate ${FRAME_RATE}`])
     ])
     .input(path.join(__dirname, 'audio_list.txt'))
     .inputOptions([
@@ -652,27 +696,20 @@ async function startTranscoding() {
       '-loglevel debug'
     ])
     .complexFilter([
-      `[0:v]scale=${VIEW_DIMENSIONS.width}:${VIEW_DIMENSIONS.height}[v]`,
+      // For VAAPI, we must ensure the scale happens before the hwupload if using the extraFlags approach
+      // VAAPI requires a hardware upload filter when grabbing from X11
+      activeEncoderName === 'vaapi'
+      ? `[0:v]scale=${VIEW_DIMENSIONS.width}:${VIEW_DIMENSIONS.height},format=nv12,hwupload[v]`
+      : `[0:v]scale=${VIEW_DIMENSIONS.width}:${VIEW_DIMENSIONS.height}[v]`,
       '[1:a]aresample=48000,volume=0.5[a]'
     ])
     .outputOptions([
-      '-map [v]',
-      '-map [a]',
-      '-c:v libx264',
-      '-preset veryfast',
-      '-c:a aac',
-      '-b:a 128k',
-      '-rc_mode 2',
-      `-g ${FRAME_RATE * HLS_SEGMENT_SECONDS}`,
-      `-b:v ${KBPS_BITRATE}k`,
-      '-f hls',
-      `-hls_time ${HLS_SEGMENT_SECONDS}`,
-      '-hls_list_size 6',
-      '-hls_flags delete_segments'
+      ...encoderOptions,
+      ...commonOutputOptions
     ])
     .output(HLS_FILE)
     .on('start',(cmd)=>{
-      logTS(`Started FFmpeg`);
+      logTS(`Started FFmpeg using ${activeEncoderName} encoder`);
       logTS(`FFmpeg command: ${cmd}`);
       setTimeout(()=>{
         isStreamReady = true;
@@ -712,10 +749,22 @@ async function startTranscoding() {
         logTS(`Health check: captureStartedAt=${captureStartedAt}, totalFrameTimeMs=${totalFrameTimeMs}, frames=${frameCount}, avgFrameTimeMs=${avgFrameTimeMs}, maxFrameTimeMs=${maxFrameTimeMs}, skippedRestarting=${framesSkippedRestarting}, browserRestarts=${browserRestartCount}, segmentStallWarnings=${segmentStallWarningsIssued}, msSinceLastFfmpegProgress=${sinceProgress}`);
       }
     })
-    .on('error', async err=>{
+    .on('error', async err => {
       logTS(`FFmpeg error: ${err.message}`);
-      await stopTranscoding();
-      startTranscoding();
+
+      // If we are NOT already in software mode, trigger the fallback
+      if (activeEncoderName !== 'software') {
+        logTS(`Hardware acceleration failed. Switching to software fallback...`);
+        global.FFMPEG_ENCODER_OVERRIDE = 'software';
+
+        await stopTranscoding();
+        // This call will now use the 'software' config because it re-evaluates the name
+        startTranscoding();
+      } else {
+        // If software fails, we just try to restart software (or exit)
+        await stopTranscoding();
+        startTranscoding();
+      }
     })
     .on('end',()=>{
       ffmpegProc = null;

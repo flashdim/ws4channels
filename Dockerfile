@@ -1,4 +1,4 @@
-FROM node:22
+FROM node:26
 
 # Install FFmpeg and Puppeteer dependencies
 RUN apt-get update && apt-get install -y \
@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
   libva-x11-2 \
   vainfo \
   intel-media-va-driver \
+  mesa-va-drivers \
   libnss3 \
   libatk1.0-0 \
   libatk-bridge2.0-0 \
