@@ -759,20 +759,6 @@ async function stopFfmpeg() {
   if (segmentWatchdogInterval) { clearInterval(segmentWatchdogInterval); segmentWatchdogInterval = null; }
   if (hlsWatcher) { hlsWatcher.close(); hlsWatcher = null; }
 
-  // Wipe stale HLS files so clients don't see a dead stream
-  try {
-    const files = fs.readdirSync(OUTPUT_DIR);
-    for (const file of files) {
-      // Only delete HLS-related files to avoid touching other potential files in OUTPUT_DIR
-      if (file.endsWith('.ts') || file.endsWith('.m3u8')) {
-        fs.unlinkSync(path.join(OUTPUT_DIR, file));
-      }
-    }
-    logTS('Cleared stale HLS segments/playlist on ffmpeg stop.');
-  } catch (err) {
-    logTS(`Error cleaning up HLS files during stop: ${err.message}`);
-  }
-
   isStreamReady = false;
   isCapturing = false;
   captureStartedAt = null;
