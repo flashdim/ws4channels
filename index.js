@@ -694,7 +694,7 @@ async function ensureFfmpeg() {
     '-map [v]', '-map [a]', '-c:v libx264', '-preset veryfast', '-c:a aac',
     '-b:a 128k', '-rc_mode 2', `-g ${FRAME_RATE * HLS_SEGMENT_SECONDS}`,
     `-b:v ${KBPS_BITRATE}k`, '-f hls', `-hls_time ${HLS_SEGMENT_SECONDS}`,
-    '-hls_list_size 6', '-hls_flags delete_segments'
+    '-hls_list_size 10', '-hls_flags delete_segments'
   ])
   .output(HLS_FILE)
   .on('start', (cmd) => {
@@ -823,6 +823,14 @@ const { cpus, memoryMB } = getContainerLimits();
 logTS(`ws4channels ${VERSION} running with ${cpus} CPU cores, ${memoryMB}MB RAM`);
 
 // Allow Serving the HLS files
+app.use('/stream', (req, res, next) => {
+  // If the stream hasn't fully initialized yet, don't serve a stale playlist
+  if (!isStreamReady) {
+    return res.status(503).send('Stream initializing...');
+  }
+  next();
+});
+
 app.use('/stream', express.static(OUTPUT_DIR));
 
 // Allow serving up the channel logo
