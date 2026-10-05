@@ -156,6 +156,19 @@ function shuffleArray(array) {
   return arr;
 }
 
+// Helper: Stale Stream files cleanup
+function clearOutputDir() {
+  try {
+    const files = fs.readdirSync(OUTPUT_DIR);
+    for (const file of files) {
+      fs.unlinkSync(path.join(OUTPUT_DIR, file));
+    }
+    logTS('Cleaned up stale HLS files to prevent old playback.');
+  } catch (err) {
+    logTS(`Warning: Could not clear output directory: ${err.message}`);
+  }
+}
+
 function getContainerLimits() {
   let cpuQuotaPath = '/sys/fs/cgroup/cpu.max';
   let memLimitPath = '/sys/fs/cgroup/memory.max';
@@ -414,7 +427,9 @@ async function startZipRotation() {
   }, delay);
 }
 
-// --- Handles connection tracking on the /stream endpoint
+/**
+ * Handles connection tracking on the /stream endpoint
+ */
 app.use('/stream', (req, res, next) => {
   // Only track the main playlist request, NOT the .ts segment downloads
   if (req.url.endsWith('stream.m3u8')) {
@@ -438,6 +453,9 @@ app.use('/stream', (req, res, next) => {
   next();
 });
 
+/**
+ * Fires up the ws4kp site in a chromium browser
+ */
 async function startBrowser(reason = 'initial startup') {
   // Hard lock: only one browser launch can be in progress at a time.
   if (isRestartingBrowser) {
@@ -565,6 +583,9 @@ async function startBrowser(reason = 'initial startup') {
   }
 }
 
+/**
+ * For restarting the browser in the event of a crash or scheduled refresh
+ */
 function scheduleBrowserRefresh() {
   if (refreshTimer) clearInterval(refreshTimer);
   if (!BROWSER_REFRESH_MINUTES || BROWSER_REFRESH_MINUTES <= 0) {
@@ -654,6 +675,9 @@ function startSegmentWatchdog() {
   }, SEGMENT_CHECK_INTERVAL_MS);
 }
 
+/**
+ * Starts ffmpeg video/audio processing
+ */
 async function ensureFfmpeg() {
   if (ffmpegProc) return; // Already running
 
@@ -738,7 +762,7 @@ async function ensureFfmpeg() {
   })
   .on('error', async (err) => {
     logTS(`FFmpeg error: ${err.message}`);
-    await stopFfmpeg();
+    if (streamActive) await stopFfmpeg(); // Only stop if not already stopped
     if (streamActive) ensureFfmpeg(); // Only restart if someone is watching
   })
   .on('end', () => {
@@ -752,33 +776,34 @@ async function ensureFfmpeg() {
   ffmpegProc.run();
 }
 
+/**
+ * Stops ffmpeg video/audio processing
+ */
 async function stopFfmpeg() {
   logTS('Pausing ffmpeg...');
+
   if (captureInterval) { clearInterval(captureInterval); captureInterval = null; }
-  if (ffmpegProc) { ffmpegProc.kill('SIGINT'); ffmpegProc = null; }
+
+  if (ffmpegProc) {
+    ffmpegProc.kill('SIGINT');
+    ffmpegProc = null;
+    // Wait a moment for ffmpeg to close files cleanly before deleting them
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
   if (segmentWatchdogInterval) { clearInterval(segmentWatchdogInterval); segmentWatchdogInterval = null; }
   if (hlsWatcher) { hlsWatcher.close(); hlsWatcher = null; }
 
-  // Wipe stale HLS files so clients don't see a dead stream
-  try {
-    const files = fs.readdirSync(OUTPUT_DIR);
-    for (const file of files) {
-      // Only delete HLS-related files to avoid touching other potential files in OUTPUT_DIR
-      if (file.endsWith('.ts') || file.endsWith('.m3u8')) {
-        fs.unlinkSync(path.join(OUTPUT_DIR, file));
-      }
-    }
-    logTS('Cleared stale HLS segments/playlist on ffmpeg stop.');
-  } catch (err) {
-    logTS(`Error cleaning up HLS files during stop: ${err.message}`);
-  }
-
+  // Reset stream ready state
   isStreamReady = false;
   isCapturing = false;
   captureStartedAt = null;
   lastProgress = null;
   lastProgressAt = null;
   lastSegmentChangeAt = null;
+
+  // FIX: Delete old files so the next client gets a fresh start
+  clearOutputDir();
 }
 
 async function startTranscoding() {
