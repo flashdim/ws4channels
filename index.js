@@ -57,7 +57,7 @@ const STDERR_BUFFER_LINES = 40;
 // Song title polling interval (ms)
 const SONG_TITLE_POLL_INTERVAL_MS = 1000;
 
-const OUTPUT_DIR = path.join(__dirname, 'output');
+const OUTPUT_DIR = path.join('/tmp', 'output');
 const AUDIO_DIR = path.join(__dirname, 'music');
 const LOGO_DIR = path.join(__dirname, 'logo');
 const HLS_FILE = path.join(OUTPUT_DIR, 'stream.m3u8');
