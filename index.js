@@ -383,23 +383,21 @@ function getMsUntilNext8MinWindow() {
     targetMinutes += 10;
   }
 
-  // 3. Create a Date object for the target time in the CURRENT hour
+  // 3. Create a Date object for the target time
   const targetDate = new Date(now);
   targetDate.setMinutes(targetMinutes);
   targetDate.setSeconds(0);
   targetDate.setMilliseconds(0);
 
-  // 4. If the target minutes reached 60, the Date object handles the hour rollover automatically.
-  // However, if the targetMinutes was 60, it means we need to look at the 08 mark of the NEXT hour.
-  if (targetMinutes >= 60) {
-    targetDate.setMinutes(8);
-    targetDate.setHours(now.getHours() + 1);
+  // 4. If setMinutes(68) rolled targetDate to the next hour (e.g., 23:58 → 00:08),
+  // we need to advance the target date by one more hour to reach the correct 08-minute mark.
+  if (targetDate <= now) {
+    targetDate.setHours(targetDate.getHours() + 1);
   }
 
   const delay = targetDate.getTime() - now.getTime();
 
   // Add a small 500ms buffer to ensure the clock has actually ticked over
-  // and we don't trigger the function a few milliseconds too early.
   return delay + 500;
 }
 
