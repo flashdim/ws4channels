@@ -809,7 +809,6 @@ async function stopFfmpeg() {
 async function startTranscoding() {
   await startBrowser('initial startup');
   scheduleBrowserRefresh();
-  if (ZIP_CODE.length > 1) startZipRotation();
 }
 
 async function stopTranscoding() {
@@ -872,6 +871,8 @@ createAudioInputFile();
 logTS(`ws4channels ${VERSION} running with ${cpus} CPU cores, ${memoryMB}MB RAM`);
 logTS(`Streaming server running on port ${STREAM_PORT}`);
 logTS('Idle — pipeline will start ffmpeg on first client connection');
+
+if (ZIP_CODE.length > 1) startZipRotation();
 
 app.listen(STREAM_PORT, async ()=>{
   await startTranscoding();
