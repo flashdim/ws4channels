@@ -717,9 +717,13 @@ async function ensureFfmpeg() {
     }
   })
   .on('stderr', (line) => {
+    // Look for the pattern: Opening 'path/to/file.ext'
     const songMatch = line.match(/Opening '(.+?)'/);
-    if (songMatch && songMatch[1].endsWith('.mp3')) {
-      songNowPlaying = path.basename(songMatch[1], '.mp3');
+
+    if (songMatch) {
+      const filePath = songMatch[1];
+      const songName = path.parse(filePath).name;
+      songNowPlaying = songName;
     }
   })
   .on('progress', (p) => {
