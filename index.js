@@ -185,12 +185,18 @@ function createAudioInputFile() {
     '04 Late Nite Cafe.mp3','05 Care Free.mp3','06 Weatherscan Track 14.mp3','07 Weatherscan Track 18.mp3'
   ];
 
+  // Define an expanded list of supported audio extensions
+  const supportedExtensions = ['.mp3', '.m4a', '.aac', '.wav', '.flac'];
+
   let files = [];
   try {
-    // Read only MP3 files from AUDIO_DIR
-    files = fs.readdirSync(AUDIO_DIR).filter(file => file.toLowerCase().endsWith('.mp3'));
+    // Read directory and filter for any file ending with our supported extensions
+    files = fs.readdirSync(AUDIO_DIR).filter(file =>
+      supportedExtensions.some(ext => file.toLowerCase().endsWith(ext))
+    );
+
     if (files.length === 0) {
-      console.warn('No MP3 files found in music directory; using default music list');
+      console.warn('No supported audio files found in music directory; using default music list');
       files = defaultMp3s;
     }
   } catch (err) {
@@ -198,20 +204,18 @@ function createAudioInputFile() {
     console.warn('Using default music list due to error');
     files = defaultMp3s;
   }
-  
+
   // Shuffle if requested
   if (SHUFFLE_MUSIC) {
     files = shuffleArray(files);
     logTS('Shuffled music list based on SHUFFLE_MUSIC=true');
   }
 
-  logTS(`Loaded ${files.length} music files`);
+  logTS(`Loaded ${files.length} music files: ${files.map(f => path.basename(f)).join(', ')}`);
+
+  // Create the concat list for FFmpeg
   const audioList = files.map(file => `file '${path.join(AUDIO_DIR, file)}'`).join('\n');
   fs.writeFileSync(path.join(__dirname, 'audio_list.txt'), audioList);
-
-
-  // Note: Update README to inform users they can add MP3 files to the 'music' folder
-  // and that the default files (listed above) are used if no MP3s are found.
 }
 
 function generateXMLTV(host) {
