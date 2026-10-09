@@ -426,10 +426,11 @@ async function startZipRotation() {
 }
 
 /**
- * Handles connection tracking on the /stream endpoint
+ * Handles connection tracking and prevents 404s by waiting
+ * for the FFmpeg pipeline to actually produce files.
  */
-app.use('/stream', (req, res, next) => {
-  // Only track the main playlist request, NOT the .ts segment downloads
+app.use('/stream', async (req, res, next) => {
+  // Only intercept the playlist request to manage the pipeline
   if (req.url.endsWith('stream.m3u8')) {
     if (!streamActive) {
       streamActive = true;
@@ -437,17 +438,34 @@ app.use('/stream', (req, res, next) => {
       ensureFfmpeg();
     }
 
-    // HLS players poll the playlist periodically to check for updates.
-    // Reset the grace timer on every poll so we don't shut down while a client is watching.
+    // Reset the grace timer on every playlist poll
     clearTimeout(streamGraceTimer);
     streamGraceTimer = setTimeout(async () => {
       streamActive = false;
       logTS('⏳ No playlist requests for grace period — pausing ffmpeg');
       await stopFfmpeg();
     }, STREAM_GRACE_PERIOD_S * 1000);
+
+    // Wait for the stream to be ready
+    let attempts = 0;
+    const maxAttempts = 30; // Wait up to ~15 seconds (30 * 500ms)
+
+    while (!isStreamReady && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 500)); // Wait 500ms
+      attempts++;
+
+      // Log progress so we know it's "warming up"
+      if (attempts % 5 === 0) logTS(`Waiting for stream to initialize... (${attempts * 500}ms elapsed)`);
+    }
+
+    if (!isStreamReady) {
+      logTS(`❌ Client request timed out waiting for stream readiness.`);
+      return res.status(503).send('Stream is warming up. Please retry in a moment.');
+    }
+    // ------------------------------------------------
   }
 
-  // IMPORTANT: Pass control to the static file server to actually deliver the files
+  // If we reached here, the file is ready to be served by express.static
   next();
 });
 
