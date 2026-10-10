@@ -186,7 +186,7 @@ function createAudioInputFile() {
   ];
 
   // Define an expanded list of supported audio extensions
-  const supportedExtensions = ['.mp3', '.m4a', '.aac', '.wav', '.flac'];
+  const supportedExtensions = ['.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg'];
 
   let files = [];
   try {
