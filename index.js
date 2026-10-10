@@ -1,3 +1,10 @@
+/**
+ * ws4channels - WeatherStar 4000 HLS Stream
+ * Captures the ws4kp weather simulator via Puppeteer and transcodes it
+ * to an HLS stream using FFmpeg. Serves the playlist and segments via
+ * Express.
+ */
+
 import puppeteer from 'puppeteer';
 import express from 'express';
 import ffmpeg from 'fluent-ffmpeg';
@@ -8,92 +15,79 @@ import Xvfb from 'xvfb';
 import { PassThrough, Writable } from 'stream';
 import { spawn } from 'child_process';
 
-// Increase the process listener limit. Puppeteer registers process-level
-// exit/SIGINT/SIGTERM/SIGHUP listeners on every browser launch and does not
-// always clean them up on close. This silences the noisy
-// MaxListenersExceededWarning so real problems are easier to see in the logs.
 process.setMaxListeners(50);
 
 const app = express();
-const __dirname = path.dirname(new URL(import.meta.url).pathname)
+const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const VERSION = 'vAPP_VERSION';
+
+// ── Configuration ────────────────────────────────────────────────────────
+
 const ZIP_CODE = (process.env.ZIP_CODE || '90210').split(',').map(z => z.trim());
 const WS4KP_HOST = process.env.WS4KP_HOST || 'localhost';
 const WS4KP_PORT = process.env.WS4KP_PORT || '8080';
 const STREAM_PORT = process.env.STREAM_PORT || '9798';
 const WS4KP_FORECAST_CD = process.env.WS4KP_FORECAST_CD || '1.0';
-const WS4KP_SCANLINES = process.env.WS4KP_SCANLINES.toLowerCase() === 'true' || false;
-const WS4KP_CURRENT_WEATHER = process.env.WS4KP_CURRENT_WEATHER.toLowerCase() === 'true' || true;
-const WS4KP_LATEST_OBSERVATIONS = process.env.WS4KP_LATEST_OBSERVATIONS.toLowerCase() === 'true' || true;
-const WS4KP_HOURLY = process.env.WS4KP_HOURLY.toLowerCase() === 'true' || true;
-const WS4KP_HOURLY_GRAPH = process.env.WS4KP_HOURLY_GRAPH.toLowerCase() === 'true' || false;
-const WS4KP_TRAVEL = process.env.WS4KP_TRAVEL.toLowerCase() === 'true' || false;
-const WS4KP_REGIONAL_FORECAST = process.env.WS4KP_REGIONAL_FORECAST || true;
-const WS4KP_LOCAL_FORECAST = process.env.WS4KP_LOCAL_FORECAST.toLowerCase() === 'true' || true;
-const WS4KP_EXTENDED_FORECAST = process.env.WS4KP_EXTENDED_FORECAST.toLowerCase() === 'true' || true;
-const WS4KP_ALMANAC = process.env.WS4KP_ALMANAC.toLowerCase() === 'true' || false;
-const WS4KP_RADAR = process.env.WS4KP_RADAR.toLowerCase() === 'true' || true;
+const WS4KP_SCANLINES = process.env.WS4KP_SCANLINES.toLowerCase() === 'true' || 'false';
+const WS4KP_CURRENT_WEATHER = process.env.WS4KP_CURRENT_WEATHER?.toLowerCase() === 'true' || 'true';
+const WS4KP_LATEST_OBSERVATIONS = process.env.WS4KP_LATEST_OBSERVATIONS?.toLowerCase() === 'true' || 'true';
+const WS4KP_HOURLY = process.env.WS4KP_HOURLY?.toLowerCase() === 'true' || 'true';
+const WS4KP_HOURLY_GRAPH = process.env.WS4KP_HOURLY_GRAPH?.toLowerCase() === 'true' || 'false';
+const WS4KP_TRAVEL = process.env.WS4KP_TRAVEL?.toLowerCase() === 'true' || 'false';
+const WS4KP_REGIONAL_FORECAST = process.env.WS4KP_REGIONAL_FORECAST === 'true' || 'false';
+const WS4KP_LOCAL_FORECAST = process.env.WS4KP_LOCAL_FORECAST?.toLowerCase() === 'true' || 'true';
+const WS4KP_EXTENDED_FORECAST = process.env.WS4KP_EXTENDED_FORECAST?.toLowerCase() === 'true' || 'true';
+const WS4KP_ALMANAC = process.env.WS4KP_ALMANAC?.toLowerCase() === 'true' || 'false';
+const WS4KP_RADAR = process.env.WS4KP_RADAR?.toLowerCase() === 'true' || 'true';
 const WS4KP_URL = `http://${WS4KP_HOST}:${WS4KP_PORT}?radar=${WS4KP_RADAR}&almanac=${WS4KP_ALMANAC}&extended-forecast=${WS4KP_EXTENDED_FORECAST}&local-forecast=${WS4KP_LOCAL_FORECAST}&regional-forecast=${WS4KP_REGIONAL_FORECAST}&travel=${WS4KP_TRAVEL}&hourly-graph=${WS4KP_HOURLY_GRAPH}&hourly=${WS4KP_HOURLY}&latest-observations=${WS4KP_LATEST_OBSERVATIONS}&current-weather=${WS4KP_CURRENT_WEATHER}&scanLines=${WS4KP_SCANLINES}&speed=${WS4KP_FORECAST_CD}&spc-outlook=false`;
 const PERMALINK_URL = process.env.PERMALINK_URL || null;
 const KBPS_BITRATE = process.env.KBPS_BITRATE || '1000';
 const FRAME_RATE = Number(process.env.FRAME_RATE) || 15;
-const SHUFFLE_MUSIC = process.env.SHUFFLE_MUSIC.toLowerCase() === 'true' || false;
+const SHUFFLE_MUSIC = process.env.SHUFFLE_MUSIC?.toLowerCase() === 'true' || false;
 const SHOW_SONG_TITLE = process.env.SHOW_SONG_TITLE?.toLowerCase() === 'true' || false;
 const HLS_SEGMENT_SECONDS = 2;
-const sleep = (waitTimeInMs) => new Promise(resolve => setTimeout(resolve, waitTimeInMs));
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Optional proactive browser refresh. If set to a number > 0, the browser
-// will be relaunched on this interval (minutes) regardless of whether
-// anything has gone wrong. 0 = disabled (default).
+/** Minutes between forced browser restarts. 0 = disabled. */
 const BROWSER_REFRESH_MINUTES = parseInt(process.env.BROWSER_REFRESH_MINUTES || '0');
 
-// Segment freshness watchdog: HLS segments should land roughly every
-// HLS_SEGMENT_SECONDS. If we go this long without any output file's mtime
-// advancing, ffmpeg is stalled on the encode/write/mux side.
+/** Segment freshness watchdog thresholds */
 const SEGMENT_STALL_WARN_MS = 8000;
 const SEGMENT_CHECK_INTERVAL_MS = 2000;
 const STDERR_BUFFER_LINES = 40;
 
-// Song title polling interval (ms)
+/** Song title polling interval (ms) */
 const SONG_TITLE_POLL_INTERVAL_MS = 1000;
+
+// ── Directories ──────────────────────────────────────────────────────────
 
 const OUTPUT_DIR = path.join('/tmp', 'output');
 const AUDIO_DIR = path.join(__dirname, 'music');
 const LOGO_DIR = path.join(__dirname, 'logo');
 const HLS_FILE = path.join(OUTPUT_DIR, 'stream.m3u8');
 
-// ws4kp 7.x supports 4 view modes: standard, wide, wide-enhanced, portrait-enhanced
-// sort out the user's preferences and set up appropriate constants
-const validViewModes = ['standard', 'wide', 'wide-enhanced', 'portrait-enhanced'];
-// get the view mode (or default) and make it lower case
-const desiredViewMode = (process.env.VIEW_MODE || 'wide').toLowerCase();
-// test against the valid modes and set up the constant
-const VIEW_MODE = validViewModes.includes(desiredViewMode) ? desiredViewMode : 'wide';
+[OUTPUT_DIR, AUDIO_DIR, LOGO_DIR].forEach(dir => {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+});
 
-// set up the width and height constants via immediately invoked function
-const VIEW_DIMENSIONS = (()=>{
-  switch(VIEW_MODE) {
-    case 'standard':
-      return {
-          width: 640,
-          height: 480,
-      }
-    case 'portrait-enhanced':
-      return {
-        width: 720,
-        height: 1280,
-      }
+// ── View mode configuration ──────────────────────────────────────────────
+
+const validViewModes = ['standard', 'wide', 'wide-enhanced', 'portrait-enhanced'];
+const VIEW_MODE = validViewModes.includes((process.env.VIEW_MODE || 'wide').toLowerCase())
+  ? (process.env.VIEW_MODE || 'wide').toLowerCase()
+  : 'wide';
+
+const VIEW_DIMENSIONS = (() => {
+  switch (VIEW_MODE) {
+    case 'standard':          return { width: 640,  height: 480 };
+    case 'portrait-enhanced': return { width: 720,  height: 1280 };
     case 'wide':
     case 'wide-enhanced':
-    default:
-      return {
-        width: 1280,
-        height: 720,
-      }
+    default:                  return { width: 1280, height: 720 };
   }
 })();
 
-[OUTPUT_DIR, AUDIO_DIR, LOGO_DIR].forEach(dir => { if (!fs.existsSync(dir)) fs.mkdirSync(dir); });
+// ── Process state ────────────────────────────────────────────────────────
 
 let ffmpegProc = null;
 let hlsWatcher = null;
@@ -112,41 +106,41 @@ let songWasPlaying = 'Starting stream...';
 let currentZipIndex = 0;
 let zipRotationTimeout = null;
 
-// --- State for backpressure + overlap protection + restart diagnostics ---
-let isCapturing = false;         // prevents overlapping capture calls
-let isRestartingBrowser = false; // prevents overlapping/concurrent browser launches
-let browserRestartCount = 0;     // how many times we've had to relaunch the browser
+/** Backpressure / overlap protection */
+let isCapturing = false;
+let isRestartingBrowser = false;
+let browserRestartCount = 0;
 let framesSkippedRestarting = 0;
 
-// --- Frame timing ---
+/** Frame timing stats */
 let totalFrameTimeMs = 0;
 let maxFrameTimeMs = 0;
 let avgFrameTimeMs = 0;
-let captureStartedAt = null; // timestamp of the currently in-flight Capture, or null
+let captureStartedAt = null;
 
-// --- ffmpeg-side instrumentation (new) ---
-let stderrBuffer = [];              // rolling buffer of the last N ffmpeg stderr lines
-let lastProgress = null;            // most recent fluent-ffmpeg 'progress' payload
-let lastProgressAt = null;          // when we last received a progress event
-let lastSegmentMtimeMs = null;      // newest mtime seen among output files
-let lastSegmentChangeAt = null;     // wall-clock time that mtime last advanced
-let segmentStallActive = false;     // whether we're currently in a detected stall
-let segmentStallWarningsIssued = 0; // how many distinct stall episodes we've logged
-let lastStallDumpAt = 0;            // throttles repeated stderr dumps during one long stall
+/** ffmpeg diagnostics */
+let stderrBuffer = [];
+let lastProgress = null;
+let lastProgressAt = null;
+let lastSegmentMtimeMs = null;
+let lastSegmentChangeAt = null;
+let segmentStallActive = false;
+let segmentStallWarningsIssued = 0;
+let lastStallDumpAt = 0;
 
-// --- Idle stream management (Heartbeat-based) ---
+/** Idle stream management */
 let streamActive = false;
 let streamGraceTimer = null;
-const STREAM_GRACE_PERIOD_S = 30; // HLS playlists refresh every 10s; 30s prevents thrashing
+const STREAM_GRACE_PERIOD_S = 30; // Grace period before pausing idle streams
 
 const waitFor = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// ── Helpers ──────────────────────────────────────────────────────────────
 
 function logTS(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
-// Helper: Fisher–Yates shuffle
 function shuffleArray(array) {
   const arr = array.slice();
   for (let i = arr.length - 1; i > 0; i--) {
@@ -156,16 +150,14 @@ function shuffleArray(array) {
   return arr;
 }
 
-// Helper: Stale Stream files cleanup
 function clearOutputDir() {
   try {
-    const files = fs.readdirSync(OUTPUT_DIR);
-    for (const file of files) {
+    for (const file of fs.readdirSync(OUTPUT_DIR)) {
       fs.unlinkSync(path.join(OUTPUT_DIR, file));
     }
-    logTS('Cleaned up stale HLS files to prevent old playback.');
+    logTS('Cleaned up stale HLS files.');
   } catch (err) {
-    logTS(`Warning: Could not clear output directory: ${err.message}`);
+    logTS(`Warning: Could not clear output dir: ${err.message}`);
   }
 }
 
@@ -174,49 +166,52 @@ function getContainerLimits() {
   let memLimitPath = '/sys/fs/cgroup/memory.max';
   let cpus = os.cpus().length;
   let memory = os.totalmem();
-  try { const [quota, period] = fs.readFileSync(cpuQuotaPath,'utf8').trim().split(' '); if(quota!=='max') cpus=parseFloat((parseInt(quota)/parseInt(period)).toFixed(2)); } catch {}
-  try { const raw = fs.readFileSync(memLimitPath,'utf8').trim(); if(raw!=='max') memory=parseInt(raw); } catch {}
-  return { cpus, memoryMB: Math.round(memory/(1024*1024)) };
+  try {
+    const [quota, period] = fs.readFileSync(cpuQuotaPath, 'utf8').trim().split(' ');
+    if (quota !== 'max') cpus = parseFloat((parseInt(quota) / parseInt(period)).toFixed(2));
+  } catch {}
+  try {
+    const raw = fs.readFileSync(memLimitPath, 'utf8').trim();
+    if (raw !== 'max') memory = parseInt(raw);
+  } catch {}
+  return { cpus, memoryMB: Math.round(memory / (1024 * 1024)) };
 }
+
+// ── Music ────────────────────────────────────────────────────────────────
 
 function createAudioInputFile() {
   const defaultMp3s = [
     '01 Weatherscan Track 26.mp3','02 Weatherscan Track 3.mp3','03 Tropical Breeze.mp3',
     '04 Late Nite Cafe.mp3','05 Care Free.mp3','06 Weatherscan Track 14.mp3','07 Weatherscan Track 18.mp3'
   ];
-
-  // Define an expanded list of supported audio extensions
   const supportedExtensions = ['.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg'];
 
   let files = [];
   try {
-    // Read directory and filter for any file ending with our supported extensions
-    files = fs.readdirSync(AUDIO_DIR).filter(file =>
-      supportedExtensions.some(ext => file.toLowerCase().endsWith(ext))
+    files = fs.readdirSync(AUDIO_DIR).filter(f =>
+      supportedExtensions.some(ext => f.toLowerCase().endsWith(ext))
     );
-
-    if (files.length === 0) {
-      console.warn('No supported audio files found in music directory; using default music list');
+    if (!files.length) {
+      console.warn('No supported audio files found; using default music list');
       files = defaultMp3s;
     }
   } catch (err) {
-    console.error(`Failed to read music directory: ${err.message}`);
-    console.warn('Using default music list due to error');
+    console.error(`Failed to read music dir: ${err.message}`);
     files = defaultMp3s;
   }
 
-  // Shuffle if requested
   if (SHUFFLE_MUSIC) {
     files = shuffleArray(files);
-    logTS('Shuffled music list based on SHUFFLE_MUSIC=true');
+    logTS('Shuffled music list.');
   }
 
-  logTS(`Loaded ${files.length} music files: ${files.map(f => path.basename(f)).join(', ')}`);
+  logTS(`Loaded ${files.length} music file(s).`);
 
-  // Create the concat list for FFmpeg
-  const audioList = files.map(file => `file '${path.join(AUDIO_DIR, file)}'`).join('\n');
+  const audioList = files.map(f => `file '${path.join(AUDIO_DIR, f)}'`).join('\n');
   fs.writeFileSync(path.join(__dirname, 'audio_list.txt'), audioList);
 }
+
+// ── XMLTV guide ──────────────────────────────────────────────────────────
 
 function generateXMLTV(host) {
   const now = new Date();
@@ -224,96 +219,67 @@ function generateXMLTV(host) {
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE tv SYSTEM "xmltv.dtd">
 <tv>
-<channel id="WS4000">
-<display-name>WeatherStar 4000</display-name>
-<icon src="${baseUrl}/logo/ws4000.png" />
-</channel>`;
-  for(let i=0;i<24;i++){
-    const startTime = new Date(now.getTime()+i*3600*1000);
-    const endTime = new Date(startTime.getTime()+3600*1000);
-    const start = startTime.toISOString().replace(/[-:T]/g,'').split('.')[0]+' +0000';
-    const end = endTime.toISOString().replace(/[-:T]/g,'').split('.')[0]+' +0000';
+  <channel id="WS4000">
+    <display-name>WeatherStar 4000</display-name>
+    <icon src="${baseUrl}/logo/ws4000.png"/>
+  </channel>`;
+
+  for (let i = 0; i < 24; i++) {
+    const startTime = new Date(now.getTime() + i * 3600 * 1000);
+    const endTime = new Date(startTime.getTime() + 3600 * 1000);
+    const pad = (n) => String(n).padStart(2, '0');
+    const start = `${startTime.getFullYear()}${pad(startTime.getMonth()+1)}${pad(startTime.getDate())}${pad(startTime.getHours())}${pad(startTime.getMinutes())}${pad(startTime.getSeconds())} +0000`;
+    const end = `${endTime.getFullYear()}${pad(endTime.getMonth()+1)}${pad(endTime.getDate())}${pad(endTime.getHours())}${pad(endTime.getMinutes())}${pad(endTime.getSeconds())} +0000`;
     xml += `
-<programme start="${start}" stop="${end}" channel="WS4000">
-<title lang="en">Local Weather</title>
-<desc lang="en">Enjoy your local weather with a touch of nostalgia.</desc>
-<icon src="${baseUrl}/logo/ws4000.png" />
-</programme>`;
+  <programme start="${start}" stop="${end}" channel="WS4000">
+    <title lang="en">Local Weather</title>
+    <desc lang="en">Enjoy your local weather with a touch of nostalgia.</desc>
+    <icon src="${baseUrl}/logo/ws4000.png"/>
+  </programme>`;
   }
-  xml += `</tv>`;
+
+  xml += '</tv>';
   return xml;
 }
 
-/**
- * Polls for song title changes and updates the custom text crawl in WS4KP.
- * Runs at SONG_TITLE_POLL_INTERVAL_MS and updates only when the title changes.
- */
+// ── Song title polling ───────────────────────────────────────────────────
+
 async function startSongTitlePolling() {
   if (songTitlePollingInterval) clearInterval(songTitlePollingInterval);
-  if (!SHOW_SONG_TITLE || !page || page.isClosed()) {
-    return;
-  }
+  if (!SHOW_SONG_TITLE || !page || page.isClosed()) return;
 
   logTS('Starting song title polling');
   songTitlePollingInterval = setInterval(async () => {
     if (!page || page.isClosed()) {
-      logTS('Page closed, stopping song title polling');
-      if (songTitlePollingInterval) clearInterval(songTitlePollingInterval);
+      clearInterval(songTitlePollingInterval);
       songTitlePollingInterval = null;
       return;
     }
 
-    try {
-      // Only update if the title has changed
-      if (songNowPlaying !== songWasPlaying) {
-        logTS(`🎵: Song changed: ${songWasPlaying}" → "${songNowPlaying}"`);
-        // Update the custom text input and enable/set it
-        try {
-          // Use evaluate to interact with the DOM directly.
-          // This bypasss all "Node is not clickable" and "Overlay" errors.
-          await page.evaluate((songName) => {
-            const checkbox = document.querySelector('#settings-customTextEnable-checkbox');
-            const textInput = document.querySelector('#settings-customText-string');
-            const setButton = document.querySelector('#settings-customText-button');
+    if (songNowPlaying !== songWasPlaying) {
+      logTS(`🎵 Song changed: "${songWasPlaying}" → "${songNowPlaying}"`);
+      try {
+        await page.evaluate((songName) => {
+          const checkbox = document.querySelector('#settings-customTextEnable-checkbox');
+          const textInput = document.querySelector('#settings-customText-string');
+          const setButton = document.querySelector('#settings-customText-button');
 
-            if (checkbox) {
-              // Force the checkbox to be checked via JS
-              checkbox.checked = true;
-              // Trigger events so the simulator's internal logic knows it changed
-              checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-
-            if (textInput) {
-              // Set the value directly
-              textInput.value = 'Now Playing: ' + songName;
-              textInput.dispatchEvent(new Event('input', { bubbles: true }));
-              textInput.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-
-            if (setButton) {
-              // Click the button via JS (ignores overlays)
-              setButton.click();
-            }
-          }, songNowPlaying);
-
-          songWasPlaying = songNowPlaying; // ONLY update success state here
-
-        } catch (err) {
-          logTS(`Failed to update custom text: ${err.message}`);
-        }
-      }
-    } catch (err) {
-      // Silently catch errors during polling to avoid spam; log only serious issues
-      if (!err.message.includes('Target page, context or browser has been closed')) {
-        logTS(`Song title polling error: ${err.message}`);
+          if (checkbox) { checkbox.checked = true; checkbox.dispatchEvent(new Event('change', { bubbles: true })); }
+          if (textInput) {
+            textInput.value = 'Now Playing: ' + songName;
+            textInput.dispatchEvent(new Event('input', { bubbles: true }));
+            textInput.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          if (setButton) setButton.click();
+        }, songNowPlaying);
+        songWasPlaying = songNowPlaying;
+      } catch (err) {
+        logTS(`Failed to update custom text: ${err.message}`);
       }
     }
   }, SONG_TITLE_POLL_INTERVAL_MS);
 }
 
-/**
- * Stops the song title polling interval.
- */
 function stopSongTitlePolling() {
   if (songTitlePollingInterval) {
     clearInterval(songTitlePollingInterval);
@@ -322,257 +288,189 @@ function stopSongTitlePolling() {
   }
 }
 
-/**
- * Rotates to the next ZIP code in the array and types it into the simulator.
- */
-async function rotateZipCode() {
-  if (!page || page.isClosed() || !ZIP_CODE || ZIP_CODE.length <= 1) {
-    return;
-  }
+// ── ZIP code rotation ────────────────────────────────────────────────────
 
-  // 2. Increment the index (wrapping around to 0 using modulo)
+async function rotateZipCode() {
+  if (!page || page.isClosed() || !ZIP_CODE || ZIP_CODE.length <= 1) return;
+
   currentZipIndex = (currentZipIndex + 1) % ZIP_CODE.length;
   const nextZip = ZIP_CODE[currentZipIndex];
 
   try {
     logTS(`🔄 Rotating location to: ${nextZip}`);
 
-    // 1. Use evaluate to change the text (we know this works)
     await page.evaluate((zip) => {
       const input = document.querySelector('#txtLocation');
       if (input) {
-        input.value = '';
         input.value = zip;
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
       }
     }, nextZip);
 
-    // 2. Use evaluate to trigger the click (bypasses the overlay error)
     const submitButton = await page.$('#btnGetLatLng');
     if (submitButton) {
-      // THE FIX: Use evaluate to trigger the click event directly on the DOM element
-      // This ignores the fact that the 'loading' or 'progress' div is covering it.
       await submitButton.evaluate(el => el.click());
-      logTS(`✅ Location rotation to ${nextZip} complete.`);
     } else {
-      // Fallback: If the button is truly gone from the DOM
       await page.keyboard.press('Enter');
-      logTS(`✅ Location rotation to ${nextZip} complete (via Enter key).`);
     }
 
-    // 3. Wait for the simulator to process the new location
     await sleep(5000);
-
+    logTS(`✅ Location rotation to ${nextZip} complete.`);
   } catch (err) {
     logTS(`❌ Failed to rotate ZIP code: ${err.message}`);
-    // We don't increment the index here, so the next interval will retry this same ZIP
   }
 }
 
-/**
- * Calculates the delay in ms until the next minute ending in 8, at the 00 second mark.
- * Example: If it is 14:12:30, the next target is 14:18:00.
- */
 function getMsUntilNext8MinWindow() {
   const now = new Date();
   const currentMinutes = now.getMinutes();
-  const currentSeconds = now.getSeconds();
-
-  // 1. Determine the target minute (the next multiple of 10, plus 8)
   let targetMinutes = (Math.floor(currentMinutes / 10) * 10) + 8;
 
-  // 2. If the target minute has already passed in this hour, move to the next 10-min block
-  if (currentMinutes >= targetMinutes) {
-    targetMinutes += 10;
-  }
+  if (currentMinutes >= targetMinutes) targetMinutes += 10;
 
-  // 3. Create a Date object for the target time
   const targetDate = new Date(now);
   targetDate.setMinutes(targetMinutes);
   targetDate.setSeconds(0);
   targetDate.setMilliseconds(0);
 
-  // 4. If setMinutes(68) rolled targetDate to the next hour (e.g., 23:58 → 00:08),
-  // we need to advance the target date by one more hour to reach the correct 08-minute mark.
-  if (targetDate <= now) {
-    targetDate.setHours(targetDate.getHours() + 1);
-  }
+  if (targetDate <= now) targetDate.setHours(targetDate.getHours() + 1);
 
-  const delay = targetDate.getTime() - now.getTime();
-
-  // Add a small 500ms buffer to ensure the clock has actually ticked over
-  return delay + 500;
+  return targetDate.getTime() - now.getTime() + 500;
 }
 
-/**
- * A recursive scheduler that triggers rotateZipCode at precise 10-minute clock intervals.
- */
 async function startZipRotation() {
-  // Clean up any existing rotation timer to prevent duplicates
   if (zipRotationTimeout) clearTimeout(zipRotationTimeout);
 
   const delay = getMsUntilNext8MinWindow();
-
   const targetDate = new Date(Date.now() + delay);
-  logTS(`⏰ Next ZIP rotation scheduled for: ${targetDate.toLocaleTimeString()} (In ${Math.round(delay/1000)}s)`);
+  logTS(`⏰ Next ZIP rotation in ${Math.round(delay / 1000)}s (at ${targetDate.toLocaleTimeString()})`);
 
   zipRotationTimeout = setTimeout(async () => {
-    try {
-      await rotateZipCode();
-    } catch (err) {
-      logTS(`❌ Rotation error: ${err.message}`);
-    } finally {
-      // RECURSION: Schedule the next rotation immediately
-      startZipRotation();
-    }
+    try { await rotateZipCode(); } catch (err) { logTS(`❌ Rotation error: ${err.message}`); }
+    finally { startZipRotation(); }
   }, delay);
 }
 
-/**
- * Fires up the ws4kp site in a chromium browser
- */
+// ── Browser management ───────────────────────────────────────────────────
+
 async function startBrowser(reason = 'initial startup') {
-  // Hard lock: only one browser launch can be in progress at a time.
   if (isRestartingBrowser) {
-    logTS('startBrowser() called while a restart was already in progress — ignoring duplicate call');
+    logTS('Ignoring duplicate startBrowser() call — restart already in progress');
     return;
   }
   isRestartingBrowser = true;
 
   try {
-    // Stop song title polling before browser restart
     stopSongTitlePolling();
-
     browserRestartCount++;
-    if(xvfb) await xvfb.stop();
-    xvfb = await new Xvfb ({
+
+    if (xvfb) await xvfb.stop();
+    xvfb = await new Xvfb({
       silent: false,
       reuse: false,
-      xvfb_args: ["-screen", "0", `${VIEW_DIMENSIONS.width}x${VIEW_DIMENSIONS.height}x24 -ac`],
+      xvfb_args: ['-screen', '0', `${VIEW_DIMENSIONS.width}x${VIEW_DIMENSIONS.height}x24 -ac`],
     });
-    await xvfb.start((err)=>{if (err) console.error(err)});
+    await xvfb.start();
     process.env['DISPLAY'] = xvfb._display;
-    logTS(`Xvfb launched with display: ${process.env.DISPLAY}`);
+    logTS(`Xvfb launched (display ${process.env.DISPLAY})`);
     await sleep(3000);
 
-    logTS(`Launching browser on ${xvfb._display} (launch #${browserRestartCount}, reason: ${reason})`);
-    if(browser) await browser.close().catch(()=>{});
+    logTS(`Launching browser (launch #${browserRestartCount}, reason: ${reason})`);
+    if (browser) await browser.close().catch(() => {});
+
     browser = await puppeteer.launch({
       headless: false,
-      args:[
+      args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-infobars',
         '--ignore-certificate-errors',
-        '--window-size='+VIEW_DIMENSIONS.width+','+VIEW_DIMENSIONS.height,
+        `--window-size=${VIEW_DIMENSIONS.width},${VIEW_DIMENSIONS.height}`,
         '--disable-dev-shm-usage',
         '--disable-extensions',
         '--start-fullscreen',
         '--autoplay-policy=no-user-gesture-required',
-        `--display=${xvfb._display}`
+        `--display=${xvfb._display}`,
       ],
-      defaultViewport: null
+      defaultViewport: null,
     });
+
     page = await browser.newPage();
+
     if (PERMALINK_URL) {
-      logTS(`Using custom permalink URL: ${PERMALINK_URL}`);
+      logTS(`Using permalink: ${PERMALINK_URL}`);
       await page.goto(PERMALINK_URL, { waitUntil: 'networkidle2', timeout: 30000 });
     } else {
       logTS(`Using URL: ${WS4KP_URL}`);
       await page.goto(WS4KP_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+
+      // Auto-fill ZIP code
       try {
         const zipInput = await page.waitForSelector('input[placeholder="Zip or City, State"], input', { timeout: 5000 });
         if (zipInput) {
-          // type the zip code
           await zipInput.type(ZIP_CODE[currentZipIndex], { delay: 100 });
-          // wait for suggestions box
           await page.waitForSelector('#divQuery .autocomplete-suggestions .suggestion');
-          // select the first suggestion
           await page.keyboard.press('ArrowDown');
-          // wait for the selection to be highlighted
           await page.waitForSelector('#divQuery .autocomplete-suggestions .suggestion.selected');
-          // find and press the submit button
           const goButton = await page.$('button[type="submit"]');
-          if (goButton) await goButton.click(); else await zipInput.press('Enter');
-          // wait for weather content to update
+          if (goButton) await goButton.click();
+          else await zipInput.press('Enter');
           await page.waitForSelector('div.weather-display, #weather-content', { timeout: 30000 });
         }
       } catch {}
 
-      // force ws4kp app to wide screen and kiosk (full screen), this removes the need to crop
-
+      // Set view mode
       try {
-        // get the widescreen checkbox from the settings section
-        // will throw if the element is not present on ws4kp 7.x and a different path is taken in the catch statement
-        // which is the reason for the short timeout
-        const widescreenCheckbox = await page.waitForSelector('#settings-wide-checkbox', {timeout: 100});
+        // ws4kp 6.x (classic) — wide checkbox
+        const widescreenCheckbox = await page.waitForSelector('#settings-wide-checkbox', { timeout: 100 });
+        const widescreenChecked = await widescreenCheckbox.evaluate(el => el.checked);
 
-
-        // 6.x (classic) behavior
-        // only supports standard and wide, check and exit with an error if not doable
         if (VIEW_MODE === 'wide-enhanced' || VIEW_MODE === 'portrait-enhanced') {
-          console.error(`This version of ws4kp only supports VIEW_MODE 'standard' or 'enhanced'`);
+          console.error('This version of ws4kp only supports standard/wide VIEW_MODE');
           await browser.close();
           await xvfb.stop();
-          process.exit();
+          process.exit(1);
         }
-        // get the checkbox's current state and click it to turn it on if necessary
-        const widescreenChecked = await widescreenCheckbox.evaluate((el) => el.checked);
-        // click the checkbox on a mismatch
-        if (widescreenChecked && VIEW_MODE === 'standard' || !widescreenChecked && VIEW_MODE === 'wide') await widescreenCheckbox.click();
+
+        if ((widescreenChecked && VIEW_MODE === 'standard') || (!widescreenChecked && VIEW_MODE === 'wide')) {
+          await widescreenCheckbox.click();
+        }
       } catch {
-              try {
-              // 7.x (wide/portrait/enhanced behavior)
-              // get the selector box and select widescreen
-              const viewSelector = await page.waitForSelector('#settings-viewMode-select');
-              // set the desired mode
-              await viewSelector.evaluate((el, VIEW_MODE) => {
-                el.value = VIEW_MODE;
-                el.dispatchEvent(new Event('change'));
-              }, VIEW_MODE);
-            } catch {}
+        try {
+          // ws4kp 7.x — view mode dropdown
+          const viewSelector = await page.waitForSelector('#settings-viewMode-select');
+          await viewSelector.evaluate((el, mode) => { el.value = mode; el.dispatchEvent(new Event('change')); }, VIEW_MODE);
+        } catch {}
+      }
 
-      }
-      finally {
-        // both 6.x and 7.x support kiosk as a checkbox
-        // and now for kiosk
-        const kioskCheckbox = await page.waitForSelector('#settings-kiosk-checkbox');    // set the checkbox
-        const kioskChecked = await kioskCheckbox.evaluate((el) => el.checked);
-        if (!kioskChecked) await kioskCheckbox.click();
-      }
+      // Enable kiosk mode
+      const kioskCheckbox = await page.waitForSelector('#settings-kiosk-checkbox');
+      const kioskChecked = await kioskCheckbox.evaluate(el => el.checked);
+      if (!kioskChecked) await kioskCheckbox.click();
     }
-    await page.setViewport({ ...VIEW_DIMENSIONS });
 
-    // Reset capture guards after a fresh browser/page is ready.
+    await page.setViewport({ ...VIEW_DIMENSIONS });
     isCapturing = false;
     captureStartedAt = null;
-    
-    // Start song title polling if enabled
-    if (SHOW_SONG_TITLE) {
-      await startSongTitlePolling();
-    }
-    
+
+    if (SHOW_SONG_TITLE) await startSongTitlePolling();
     logTS(`Browser ready (launch #${browserRestartCount})`);
   } finally {
     isRestartingBrowser = false;
   }
 }
 
-/**
- * For restarting the browser in the event of a crash or scheduled refresh
- */
 function scheduleBrowserRefresh() {
   if (refreshTimer) clearInterval(refreshTimer);
   if (!BROWSER_REFRESH_MINUTES || BROWSER_REFRESH_MINUTES <= 0) {
-    logTS('Scheduled browser refresh disabled (BROWSER_REFRESH_MINUTES not set)');
+    logTS('Scheduled browser refresh disabled');
     return;
   }
-  logTS(`Scheduled browser refresh enabled: every ${BROWSER_REFRESH_MINUTES} minute(s)`);
+  logTS(`Scheduled browser refresh: every ${BROWSER_REFRESH_MINUTES} minute(s)`);
   refreshTimer = setInterval(async () => {
     try {
       logTS('Restarting transcoding after scheduled browser refresh');
-
       await stopTranscoding();
       await startTranscoding();
     } catch (err) {
@@ -581,26 +479,24 @@ function scheduleBrowserRefresh() {
   }, BROWSER_REFRESH_MINUTES * 60 * 1000);
 }
 
+// ── FFmpeg diagnostics ───────────────────────────────────────────────────
+
 function dumpFfmpegDiagnostics(gapMs) {
-  logTS(`FFMPEG STALL WARNING: no new HLS segment/file activity in ${gapMs}ms (segments should land roughly every ${HLS_SEGMENT_SECONDS * 1000}ms)`);
+  logTS(`FFMPEG STALL: no segment activity in ${gapMs}ms (expected ~${HLS_SEGMENT_SECONDS * 1000}ms intervals)`);
 
   if (lastProgress) {
-    const sinceProgress = lastProgressAt ? (Date.now() - lastProgressAt) : null;
-    const frameCount = lastProgress ? lastProgress.frames : 0;
-    const avgFrameTimeMs = frames > 0 ? Math.round(totalFrameTimeMs / frameCount) : 0;
-    const currentFps = lastProgress ? lastProgress.currentFps : 0;
-    const currentKbps = lastProgress ? lastProgress.currentKbps : 0;
-    const lastFfmpegTimemark = lastProgress ? lastProgress.timemark : 0;
-    logTS(`Last ffmpeg progress event (${sinceProgress}ms ago): frames=${frameCount}, currentFps=${currentFps}, currentKbps=${currentKbps}, timemark=${lastFfmpegTimemark}`);
+    const since = lastProgressAt ? (Date.now() - lastProgressAt) : null;
+    const { frames, currentFps, currentKbps, timemark } = lastProgress;
+    logTS(`Last progress (${since}ms ago): frames=${frames}, fps=${currentFps}, kbps=${currentKbps}, timemark=${timemark}`);
   } else {
-    logTS('No ffmpeg progress events received yet this session');
+    logTS('No ffmpeg progress events yet');
   }
 
-  if (stderrBuffer.length === 0) {
-    logTS('(no ffmpeg stderr output captured yet)');
-  } else {
-    logTS(`Last ${stderrBuffer.length} ffmpeg stderr line(s):`);
+  if (stderrBuffer.length) {
+    logTS(`Last ${stderrBuffer.length} stderr line(s):`);
     stderrBuffer.forEach(line => logTS(`  ffmpeg: ${line}`));
+  } else {
+    logTS('(no ffmpeg stderr captured)');
   }
 }
 
@@ -612,11 +508,7 @@ function startSegmentWatchdog() {
 
   segmentWatchdogInterval = setInterval(() => {
     let files;
-    try {
-      files = fs.readdirSync(OUTPUT_DIR);
-    } catch {
-      return; // output dir momentarily unavailable, e.g. during a restart
-    }
+    try { files = fs.readdirSync(OUTPUT_DIR); } catch { return; }
 
     let newestMtime = 0;
     for (const f of files) {
@@ -631,7 +523,7 @@ function startSegmentWatchdog() {
       lastSegmentMtimeMs = newestMtime;
       lastSegmentChangeAt = Date.now();
       if (segmentStallActive) {
-        logTS('FFMPEG STALL RECOVERED: new segment activity detected, output is flowing again');
+        logTS('FFMPEG STALL RECOVERED: output flowing again');
         segmentStallActive = false;
       }
       return;
@@ -639,8 +531,6 @@ function startSegmentWatchdog() {
 
     const gapMs = Date.now() - lastSegmentChangeAt;
     if (gapMs > SEGMENT_STALL_WARN_MS) {
-      // Log the initial detection immediately, then only re-dump every 5s
-      // while the same stall continues, so a long stall doesn't spam the log.
       if (!segmentStallActive || Date.now() - lastStallDumpAt > 5000) {
         segmentStallActive = true;
         lastStallDumpAt = Date.now();
@@ -651,149 +541,128 @@ function startSegmentWatchdog() {
   }, SEGMENT_CHECK_INTERVAL_MS);
 }
 
-/**
- * Starts ffmpeg video/audio processing
- */
+// ── Transcoding ──────────────────────────────────────────────────────────
+
 async function ensureFfmpeg() {
-  if (ffmpegProc) return; // Already running
+  if (ffmpegProc) return;
 
   logTS('Starting ffmpeg and capture loop...');
 
-  // 1. Start capture loop
+  // Frame capture interval
   captureInterval = setInterval(async () => {
-    if (!ffmpegProc || !page) return;
-    if (isRestartingBrowser) {
-      framesSkippedRestarting++;
-      return;
-    }
-    try {
-      if (page.isClosed()) {
-        isCapturing = false;
-        captureStartedAt = null;
-        await startBrowser('page was closed');
-        return;
-      }
-    } catch (err) {
-      console.warn('Capture error, retrying...', err.message);
-      await startBrowser(`capture error: ${err.message}`);
+    if (!ffmpegProc || !page || isRestartingBrowser) return;
+
+    if (page.isClosed()) {
+      await startBrowser('page was closed');
       return;
     }
   }, 1000 / FRAME_RATE);
 
-  // 2. Start ffmpeg
+  // FFmpeg process
   ffmpegProc = ffmpeg()
-  .input(xvfb._display + '.0')
-  .inputOptions(['-f x11grab', `-framerate ${FRAME_RATE}`])
-  .input(path.join(__dirname, 'audio_list.txt'))
-  .inputOptions(['-f concat', '-safe 0', '-stream_loop -1', '-loglevel debug'])
-  .complexFilter([
-    `[0:v]scale=${VIEW_DIMENSIONS.width}:${VIEW_DIMENSIONS.height}[v]`,
-    '[1:a]aresample=48000,volume=0.5[a]'
-  ])
-  .outputOptions([
-    '-map [v]', '-map [a]', '-c:v libx264', '-preset veryfast', '-c:a aac',
-    '-b:a 128k', '-rc_mode 2', `-g ${FRAME_RATE * HLS_SEGMENT_SECONDS}`,
-    `-b:v ${KBPS_BITRATE}k`, '-f hls', `-hls_time ${HLS_SEGMENT_SECONDS}`,
-    '-hls_list_size 6', '-hls_flags delete_segments'
-  ])
-  .output(HLS_FILE)
-  .on('start', (cmd) => {
-    logTS(`Started FFmpeg`);
-    logTS(`FFmpeg command: ${cmd}`);
-    isStreamReady = true;
-    isCapturing = true;
-    captureStartedAt = Date.now();
+    .input(xvfb._display + '.0')
+    .inputOptions(['-f x11grab', `-framerate ${FRAME_RATE}`])
+    .input(path.join(__dirname, 'audio_list.txt'))
+    .inputOptions(['-f concat', '-safe 0', '-stream_loop -1', '-loglevel debug'])
+    .complexFilter([
+      `[0:v]scale=${VIEW_DIMENSIONS.width}:${VIEW_DIMENSIONS.height}[v]`,
+      '[1:a]aresample=48000,volume=0.5[a]',
+    ])
+    .outputOptions([
+      '-map [v]', '-map [a]',
+      '-c:v libx264', '-preset veryfast',
+      '-c:a aac', '-b:a 128k',
+      '-rc_mode 2', `-g ${FRAME_RATE * HLS_SEGMENT_SECONDS}`,
+      `-b:v ${KBPS_BITRATE}k`,
+      '-f hls', `-hls_time ${HLS_SEGMENT_SECONDS}`,
+      '-hls_list_size 6', '-hls_flags delete_segments',
+    ])
+    .output(HLS_FILE)
+    .on('start', (cmd) => {
+      logTS(`Started FFmpeg: ${cmd}`);
+      isStreamReady = true;
+      isCapturing = true;
+      captureStartedAt = Date.now();
 
-    if (!hlsWatcher && !fs.existsSync(HLS_FILE)) {
-      logTS('Waiting for HLS playlist creation...');
-      hlsWatcher = fs.watch(OUTPUT_DIR, (eventType, filename) => {
-        if (filename === 'stream.m3u8') {
-          logTS('HLS playlist detected via watcher.');
-          isStreamReady = true;
-          captureStartedAt = Date.now();
-          if (hlsWatcher) { hlsWatcher.close(); hlsWatcher = null; }
-        }
-      });
-    }
-  })
-  .on('stderr', (line) => {
-    // 1. Ignore output files (ffmpeg logs these as "Opening 'file' for writing")
-    if (line.includes('for writing')) {
-      return;
-    }
+      if (!hlsWatcher && !fs.existsSync(HLS_FILE)) {
+        logTS('Waiting for HLS playlist...');
+        hlsWatcher = fs.watch(OUTPUT_DIR, (eventType, filename) => {
+          if (filename === 'stream.m3u8') {
+            logTS('HLS playlist detected');
+            isStreamReady = true;
+            captureStartedAt = Date.now();
+            hlsWatcher?.close();
+            hlsWatcher = null;
+          }
+        });
+      }
+    })
+    .on('stderr', (line) => {
+      stderrBuffer.push(line);
+      if (stderrBuffer.length > STDERR_BUFFER_LINES) stderrBuffer.shift();
 
-    // 2. Match input files: "Opening 'file.ext'"
-    const songMatch = line.match(/Opening '([^']+?)'/);
-    if (songMatch) {
-      const filePath = songMatch[1];
+      // Skip file-open messages for HLS output
+      if (line.includes('for writing')) return;
 
-      // 3. Ensure it is actually a music file
-      if (filePath.endsWith('.m3u8') || filePath.endsWith('.ts')) {
-        return;
+      // Track current song title from ffmpeg input log
+      const songMatch = line.match(/Opening '([^']+?)'/);
+      if (songMatch && songMatch[1].match(/\.(mp3|m4a|aac|wav|flac|ogg)$/i)) {
+        songNowPlaying = path.parse(songMatch[1]).name;
+      }
+    })
+    .on('progress', (p) => {
+      lastProgress = p;
+      lastProgressAt = Date.now();
+
+      if (captureStartedAt) {
+        totalFrameTimeMs = Date.now() - captureStartedAt;
+        const avg = lastProgress.frames > 0
+          ? Math.round(totalFrameTimeMs / lastProgress.frames)
+          : null;
+        avgFrameTimeMs = avg;
+        if (avg > maxFrameTimeMs) maxFrameTimeMs = avg;
       }
 
-      // 4. Save the song name
-      const songName = path.parse(filePath).name;
-      songNowPlaying = songName;
-    }
-  })
-  .on('progress', (p) => {
-    lastProgress = p;
-    lastProgressAt = Date.now();
-    totalFrameTimeMs = captureStartedAt ? Date.now() - captureStartedAt : null;
-    const frameCount = lastProgress ? lastProgress.frames : 0;
-    avgFrameTimeMs = frameCount > 0 ? Math.round(totalFrameTimeMs / frameCount) : null;
-    if (avgFrameTimeMs > maxFrameTimeMs) maxFrameTimeMs = avgFrameTimeMs;
-
-    let elapsedSeconds = Math.floor(totalFrameTimeMs / 1000);
-    if (((elapsedSeconds % 60) === 0) && (lastLoggedTime != elapsedSeconds)) {
-      lastLoggedTime = elapsedSeconds;
-      logTS(`Health check: frames=${frameCount}, avgFrameTimeMs=${avgFrameTimeMs}, maxFrameTimeMs=${maxFrameTimeMs}`);
-    }
-  })
-  .on('error', async (err) => {
-    logTS(`FFmpeg error: ${err.message}`);
-    if (streamActive) await stopFfmpeg(); // Only stop if not already stopped
-    if (streamActive) ensureFfmpeg(); // Only restart if someone is watching
-  })
-  .on('end', () => {
-    ffmpegProc = null;
-    isStreamReady = false;
-    isCapturing = false;
-    captureStartedAt = null;
-  });
+      const elapsed = Math.floor(totalFrameTimeMs / 1000);
+      if (elapsed % 60 === 0 && lastLoggedTime !== elapsed) {
+        lastLoggedTime = elapsed;
+        logTS(`Health: frames=${lastProgress.frames}, avg=${avgFrameTimeMs}ms, max=${maxFrameTimeMs}ms`);
+      }
+    })
+    .on('error', async (err) => {
+      logTS(`FFmpeg error: ${err.message}`);
+      if (streamActive) {
+        await stopFfmpeg();
+        ensureFfmpeg();
+      }
+    })
+    .on('end', () => {
+      ffmpegProc = null;
+      isStreamReady = false;
+      isCapturing = false;
+      captureStartedAt = null;
+    });
 
   startSegmentWatchdog();
   ffmpegProc.run();
 }
 
-/**
- * Stops ffmpeg video/audio processing
- */
 async function stopFfmpeg() {
-  logTS('Pausing ffmpeg...');
+  logTS('Stopping ffmpeg...');
 
   if (captureInterval) { clearInterval(captureInterval); captureInterval = null; }
-
   if (ffmpegProc) {
     ffmpegProc.kill('SIGINT');
     ffmpegProc = null;
-    // Wait a moment for ffmpeg to close files cleanly before deleting them
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await sleep(1000);
   }
-
   if (segmentWatchdogInterval) { clearInterval(segmentWatchdogInterval); segmentWatchdogInterval = null; }
   if (hlsWatcher) { hlsWatcher.close(); hlsWatcher = null; }
 
-  // Reset stream ready state
   isStreamReady = false;
   isCapturing = false;
   captureStartedAt = null;
-  lastProgress = null;
-  lastProgressAt = null;
-  lastSegmentChangeAt = null;
-
-  // FIX: Delete old files so the next client gets a fresh start
+  lastProgress = lastProgressAt = lastSegmentChangeAt = null;
   clearOutputDir();
 }
 
@@ -809,109 +678,98 @@ async function stopTranscoding() {
   await stopFfmpeg();
 }
 
-app.get('/playlist.m3u',(req,res)=>{
+// ── Express routes ───────────────────────────────────────────────────────
+
+app.get('/playlist.m3u', (req, res) => {
   const host = req.headers.host || `localhost:${STREAM_PORT}`;
   const baseUrl = `http://${host}`;
-  const m3uContent = `#EXTM3U
+  res.set('Content-Type', 'application/x-mpegURL');
+  res.send(`#EXTM3U
 #EXTINF:-1 channel-id="weatherStar4000" tvg-id="weatherStar4000" tvg-channel-no="275" tvc-guide-placeholders="3600" tvc-guide-title="Local Weather" tvc-guide-description="Enjoy your local weather with a touch of nostalgia." tvc-guide-art="${baseUrl}/logo/ws4000.png" tvg-logo="${baseUrl}/logo/ws4000.png",WeatherStar 4000
 ${baseUrl}/stream/stream.m3u8
-`;
-  res.set('Content-Type','application/x-mpegURL'); res.send(m3uContent);
+`);
 });
 
-app.get('/guide.xml',(req,res)=>{
+app.get('/guide.xml', (req, res) => {
   const host = req.headers.host || `localhost:${STREAM_PORT}`;
-  res.set('Content-Type','application/xml'); res.send(generateXMLTV(host));
+  res.set('Content-Type', 'application/xml');
+  res.send(generateXMLTV(host));
 });
 
-app.get('/health',(req,res)=>{
-  const frames = lastProgress ? lastProgress.frames : null;
-  const currentFps = lastProgress ? lastProgress.currentFps : null;
-  const lastFfmpegTimemark = lastProgress ? lastProgress.timemark : null;
-  const msSinceLastSegmentChange = lastSegmentChangeAt ? (Date.now() - lastSegmentChangeAt) : null;
-  const msSinceLastFfmpegProgress = lastProgressAt ? (Date.now() - lastProgressAt) : null;
+app.get('/health', (req, res) => {
+  const frames = lastProgress?.frames ?? null;
+  const currentFps = lastProgress?.currentFps ?? null;
+  const lastFfmpegTimemark = lastProgress?.timemark ?? null;
 
-  res.status(isStreamReady?200:503).json({
-    ready:isStreamReady,
+  res.status(isStreamReady ? 200 : 503).json({
+    ready: isStreamReady,
     lastFfmpegTimemark,
     currentFps,
     totalFrameTimeMs,
     frames,
     avgFrameTimeMs,
     maxFrameTimeMs,
-    msSinceLastSegmentChange,
-    msSinceLastFfmpegProgress,
+    msSinceLastSegmentChange: lastSegmentChangeAt ? Date.now() - lastSegmentChangeAt : null,
+    msSinceLastFfmpegProgress: lastProgressAt ? Date.now() - lastProgressAt : null,
     segmentStallActive,
     segmentStallWarningsIssued,
     browserRestartCount,
-    framesSkippedRestarting
+    framesSkippedRestarting,
   });
 });
 
-const { cpus, memoryMB } = getContainerLimits();
-logTS(`ws4channels ${VERSION} running with ${cpus} CPU cores, ${memoryMB}MB RAM`);
+// ── Stream endpoint with idle management ─────────────────────────────────
 
-/**
- * Handles connection tracking and prevents 404s by waiting
- * for the FFmpeg pipeline to actually produce files.
- */
 app.use('/stream', async (req, res, next) => {
-  // Only intercept the playlist request to manage the pipeline
-  if (req.url.endsWith('stream.m3u8')) {
-    if (!streamActive) {
-      streamActive = true;
-      logTS('📡 Stream client connected — starting ffmpeg');
-      ensureFfmpeg();
-    }
+  if (!req.url.endsWith('stream.m3u8')) return next();
 
-    // Reset the grace timer on every playlist poll
-    clearTimeout(streamGraceTimer);
-    streamGraceTimer = setTimeout(async () => {
-      streamActive = false;
-      logTS('⏳ No playlist requests for grace period — pausing ffmpeg');
-      await stopFfmpeg();
-    }, STREAM_GRACE_PERIOD_S * 1000);
-
-    // Wait for the stream to be ready
-    let attempts = 0;
-    const maxAttempts = 30; // Wait up to ~15 seconds (30 * 500ms)
-
-while (!isStreamReady && attempts < maxAttempts) {
-  await new Promise(resolve => setTimeout(resolve, 500)); // Wait 500ms
-  attempts++;
-
-  // Log progress so we know it's "warming up"
-  if (attempts % 5 === 0) logTS(`Waiting for stream to initialize... (${attempts * 500}ms elapsed)`);
-}
-
-if (!isStreamReady) {
-  logTS(`❌ Client request timed out waiting for stream readiness.`);
-  return res.status(503).send('Stream is warming up. Please retry in a moment.');
-}
-// ------------------------------------------------
+  if (!streamActive) {
+    streamActive = true;
+    logTS('📡 Client connected — starting ffmpeg');
+    ensureFfmpeg();
   }
 
-  // If we reached here, the file is ready to be served by express.static
+  // Reset grace timer on every request
+  clearTimeout(streamGraceTimer);
+  streamGraceTimer = setTimeout(async () => {
+    streamActive = false;
+    logTS('⏳ No requests during grace period — pausing ffmpeg');
+    await stopFfmpeg();
+  }, STREAM_GRACE_PERIOD_S * 1000);
+
+  // Wait for stream readiness
+  let attempts = 0;
+  const maxAttempts = 30;
+  while (!isStreamReady && attempts < maxAttempts) {
+    await sleep(500);
+    attempts++;
+    if (attempts % 5 === 0) logTS(`Warming up... (${attempts * 500}ms)`);
+  }
+
+  if (!isStreamReady) {
+    logTS('❌ Timeout waiting for stream readiness');
+    return res.status(503).send('Stream is warming up. Please retry.');
+  }
+
   next();
 });
 
-// Allow Serving the HLS files
 app.use('/stream', express.static(OUTPUT_DIR));
-
-// Allow serving up the channel logo
 app.use('/logo', express.static(LOGO_DIR));
 
-// Get ready to listen soon
+// ── Boot ─────────────────────────────────────────────────────────────────
+
+const { cpus, memoryMB } = getContainerLimits();
+logTS(`ws4channels ${VERSION} — ${cpus} CPU, ${memoryMB}MB RAM`);
 createAudioInputFile();
-logTS(`ws4channels ${VERSION} running with ${cpus} CPU cores, ${memoryMB}MB RAM`);
-logTS(`Streaming server running on port ${STREAM_PORT}`);
-logTS('Idle — pipeline will start ffmpeg on first client connection');
+logTS(`Streaming on port ${STREAM_PORT}`);
+logTS('Idle — ffmpeg starts on first client connection');
 
 if (ZIP_CODE.length > 1) startZipRotation();
 
-app.listen(STREAM_PORT, async ()=>{
+app.listen(STREAM_PORT, async () => {
   await startTranscoding();
 });
 
-process.on('SIGINT', async ()=>{ logTS('SIGINT received'); await stopTranscoding(); process.exit(); });
-process.on('SIGTERM', async ()=>{ logTS('SIGTERM received'); await stopTranscoding(); process.exit(); });
+process.on('SIGINT',  async () => { logTS('SIGINT received'); await stopTranscoding(); process.exit(); });
+process.on('SIGTERM', async () => { logTS('SIGTERM received'); await stopTranscoding(); process.exit(); });
