@@ -185,12 +185,18 @@ function createAudioInputFile() {
     '04 Late Nite Cafe.mp3','05 Care Free.mp3','06 Weatherscan Track 14.mp3','07 Weatherscan Track 18.mp3'
   ];
 
+  // Define an expanded list of supported audio extensions
+  const supportedExtensions = ['.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg'];
+
   let files = [];
   try {
-    // Read only MP3 files from AUDIO_DIR
-    files = fs.readdirSync(AUDIO_DIR).filter(file => file.toLowerCase().endsWith('.mp3'));
+    // Read directory and filter for any file ending with our supported extensions
+    files = fs.readdirSync(AUDIO_DIR).filter(file =>
+      supportedExtensions.some(ext => file.toLowerCase().endsWith(ext))
+    );
+
     if (files.length === 0) {
-      console.warn('No MP3 files found in music directory; using default music list');
+      console.warn('No supported audio files found in music directory; using default music list');
       files = defaultMp3s;
     }
   } catch (err) {
@@ -198,20 +204,18 @@ function createAudioInputFile() {
     console.warn('Using default music list due to error');
     files = defaultMp3s;
   }
-  
+
   // Shuffle if requested
   if (SHUFFLE_MUSIC) {
     files = shuffleArray(files);
     logTS('Shuffled music list based on SHUFFLE_MUSIC=true');
   }
 
-  logTS(`Loaded ${files.length} music files`);
+  logTS(`Loaded ${files.length} music files: ${files.map(f => path.basename(f)).join(', ')}`);
+
+  // Create the concat list for FFmpeg
   const audioList = files.map(file => `file '${path.join(AUDIO_DIR, file)}'`).join('\n');
   fs.writeFileSync(path.join(__dirname, 'audio_list.txt'), audioList);
-
-
-  // Note: Update README to inform users they can add MP3 files to the 'music' folder
-  // and that the default files (listed above) are used if no MP3s are found.
 }
 
 function generateXMLTV(host) {
@@ -424,50 +428,6 @@ async function startZipRotation() {
     }
   }, delay);
 }
-
-/**
- * Handles connection tracking and prevents 404s by waiting
- * for the FFmpeg pipeline to actually produce files.
- */
-app.use('/stream', async (req, res, next) => {
-  // Only intercept the playlist request to manage the pipeline
-  if (req.url.endsWith('stream.m3u8')) {
-    if (!streamActive) {
-      streamActive = true;
-      logTS('📡 Stream client connected — starting ffmpeg');
-      ensureFfmpeg();
-    }
-
-    // Reset the grace timer on every playlist poll
-    clearTimeout(streamGraceTimer);
-    streamGraceTimer = setTimeout(async () => {
-      streamActive = false;
-      logTS('⏳ No playlist requests for grace period — pausing ffmpeg');
-      await stopFfmpeg();
-    }, STREAM_GRACE_PERIOD_S * 1000);
-
-    // Wait for the stream to be ready
-    let attempts = 0;
-    const maxAttempts = 30; // Wait up to ~15 seconds (30 * 500ms)
-
-    while (!isStreamReady && attempts < maxAttempts) {
-      await new Promise(resolve => setTimeout(resolve, 500)); // Wait 500ms
-      attempts++;
-
-      // Log progress so we know it's "warming up"
-      if (attempts % 5 === 0) logTS(`Waiting for stream to initialize... (${attempts * 500}ms elapsed)`);
-    }
-
-    if (!isStreamReady) {
-      logTS(`❌ Client request timed out waiting for stream readiness.`);
-      return res.status(503).send('Stream is warming up. Please retry in a moment.');
-    }
-    // ------------------------------------------------
-  }
-
-  // If we reached here, the file is ready to be served by express.static
-  next();
-});
 
 /**
  * Fires up the ws4kp site in a chromium browser
@@ -757,9 +717,24 @@ async function ensureFfmpeg() {
     }
   })
   .on('stderr', (line) => {
-    const songMatch = line.match(/Opening '(.+?)'/);
-    if (songMatch && songMatch[1].endsWith('.mp3')) {
-      songNowPlaying = path.basename(songMatch[1], '.mp3');
+    // 1. Ignore output files (ffmpeg logs these as "Opening 'file' for writing")
+    if (line.includes('for writing')) {
+      return;
+    }
+
+    // 2. Match input files: "Opening 'file.ext'"
+    const songMatch = line.match(/Opening '([^']+?)'/);
+    if (songMatch) {
+      const filePath = songMatch[1];
+
+      // 3. Ensure it is actually a music file
+      if (filePath.endsWith('.m3u8') || filePath.endsWith('.ts')) {
+        return;
+      }
+
+      // 4. Save the song name
+      const songName = path.parse(filePath).name;
+      songNowPlaying = songName;
     }
   })
   .on('progress', (p) => {
@@ -875,6 +850,50 @@ app.get('/health',(req,res)=>{
 
 const { cpus, memoryMB } = getContainerLimits();
 logTS(`ws4channels ${VERSION} running with ${cpus} CPU cores, ${memoryMB}MB RAM`);
+
+/**
+ * Handles connection tracking and prevents 404s by waiting
+ * for the FFmpeg pipeline to actually produce files.
+ */
+app.use('/stream', async (req, res, next) => {
+  // Only intercept the playlist request to manage the pipeline
+  if (req.url.endsWith('stream.m3u8')) {
+    if (!streamActive) {
+      streamActive = true;
+      logTS('📡 Stream client connected — starting ffmpeg');
+      ensureFfmpeg();
+    }
+
+    // Reset the grace timer on every playlist poll
+    clearTimeout(streamGraceTimer);
+    streamGraceTimer = setTimeout(async () => {
+      streamActive = false;
+      logTS('⏳ No playlist requests for grace period — pausing ffmpeg');
+      await stopFfmpeg();
+    }, STREAM_GRACE_PERIOD_S * 1000);
+
+    // Wait for the stream to be ready
+    let attempts = 0;
+    const maxAttempts = 30; // Wait up to ~15 seconds (30 * 500ms)
+
+while (!isStreamReady && attempts < maxAttempts) {
+  await new Promise(resolve => setTimeout(resolve, 500)); // Wait 500ms
+  attempts++;
+
+  // Log progress so we know it's "warming up"
+  if (attempts % 5 === 0) logTS(`Waiting for stream to initialize... (${attempts * 500}ms elapsed)`);
+}
+
+if (!isStreamReady) {
+  logTS(`❌ Client request timed out waiting for stream readiness.`);
+  return res.status(503).send('Stream is warming up. Please retry in a moment.');
+}
+// ------------------------------------------------
+  }
+
+  // If we reached here, the file is ready to be served by express.static
+  next();
+});
 
 // Allow Serving the HLS files
 app.use('/stream', express.static(OUTPUT_DIR));

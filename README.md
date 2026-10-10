@@ -11,6 +11,7 @@ This version is forked from: https://github.com/rice9797/ws4channels. It adds:
 - ffmpeg x11grab screen capturing for improved performance/speed
 - ffmpeg stops when there are no active connections, saving CPU
 - Extra environment variables to support native ws4kp toggles
+- Expanded audio file support: `.mp3 .m4a .aac .wav .flac .ogg`
 
 ## Prerequisites
 
