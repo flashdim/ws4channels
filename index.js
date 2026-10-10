@@ -717,11 +717,22 @@ async function ensureFfmpeg() {
     }
   })
   .on('stderr', (line) => {
-    // Look for the pattern: Opening 'path/to/file.ext'
-    const songMatch = line.match(/Opening '(.+?)'/);
+    // 1. Ignore output files (ffmpeg logs these as "Opening 'file' for writing")
+    if (line.includes('for writing')) {
+      return;
+    }
 
+    // 2. Match input files: "Opening 'file.ext'"
+    const songMatch = line.match(/Opening '([^']+?)'/);
     if (songMatch) {
       const filePath = songMatch[1];
+
+      // 3. Ensure it is actually a music file
+      if (filePath.endsWith('.m3u8') || filePath.endsWith('.ts')) {
+        return;
+      }
+
+      // 4. Save the song name
       const songName = path.parse(filePath).name;
       songNowPlaying = songName;
     }
