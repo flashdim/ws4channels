@@ -12,6 +12,7 @@ This version is forked from: https://github.com/rice9797/ws4channels. It adds:
 - ffmpeg stops when there are no active connections, saving CPU
 - Extra environment variables to support native ws4kp toggles
 - Expanded audio file support: `.mp3 .m4a .aac .wav .flac .ogg`
+- Custom XMLTV channel logo via environment variable
 
 ## Prerequisites
 
@@ -129,10 +130,12 @@ services:
       - WS4KP_EXTENDED_FORECAST=true
       - WS4KP_ALMANAC=true
       - WS4KP_RADAR=true
+      - XMLTV_LOGO=logo/channel-weather.png
     ports:
       - 9798:9798
     volumes:
       - /etc/localtime:/etc/localtime:ro
+      - /opt/ws4kp/logo:/app/logo
       - /opt/ws4kp/music:/app/music
     networks:
       my_network:
