@@ -45,6 +45,7 @@ const KBPS_BITRATE = process.env.KBPS_BITRATE || '1000';
 const FRAME_RATE = Number(process.env.FRAME_RATE) || 15;
 const SHUFFLE_MUSIC = process.env.SHUFFLE_MUSIC?.toLowerCase() === 'true' || false;
 const SHOW_SONG_TITLE = process.env.SHOW_SONG_TITLE?.toLowerCase() === 'true' || false;
+const XMLTV_LOGO = process.env.XMLTV_LOGO || 'logo/ws4000.png'
 const HLS_SEGMENT_SECONDS = 2;
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -685,7 +686,7 @@ app.get('/playlist.m3u', (req, res) => {
   const baseUrl = `http://${host}`;
   res.set('Content-Type', 'application/x-mpegURL');
   res.send(`#EXTM3U
-#EXTINF:-1 channel-id="weatherStar4000" tvg-id="weatherStar4000" tvg-channel-no="275" tvc-guide-placeholders="3600" tvc-guide-title="Local Weather" tvc-guide-description="Enjoy your local weather with a touch of nostalgia." tvc-guide-art="${baseUrl}/logo/ws4000.png" tvg-logo="${baseUrl}/logo/ws4000.png",WeatherStar 4000
+#EXTINF:-1 channel-id="weatherStar4000" tvg-id="weatherStar4000" tvg-channel-no="275" tvc-guide-placeholders="3600" tvc-guide-title="Local Weather" tvc-guide-description="Enjoy your local weather with a touch of nostalgia." tvc-guide-art="${baseUrl}/${XMLTV_LOGO}" tvg-logo="${baseUrl}/${XMLTV_LOGO}",WeatherStar 4000
 ${baseUrl}/stream/stream.m3u8
 `);
 });
