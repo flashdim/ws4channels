@@ -222,7 +222,7 @@ function generateXMLTV(host) {
 <tv>
   <channel id="WS4000">
     <display-name>WeatherStar 4000</display-name>
-    <icon src="${baseUrl}/logo/ws4000.png"/>
+    <icon src="${baseUrl}/${XMLTV_LOGO}"/>
   </channel>`;
 
   for (let i = 0; i < 24; i++) {
@@ -235,7 +235,7 @@ function generateXMLTV(host) {
   <programme start="${start}" stop="${end}" channel="WS4000">
     <title lang="en">Local Weather</title>
     <desc lang="en">Enjoy your local weather with a touch of nostalgia.</desc>
-    <icon src="${baseUrl}/logo/ws4000.png"/>
+    <icon src="${baseUrl}/${XMLTV_LOGO}"/>
   </programme>`;
   }
 
