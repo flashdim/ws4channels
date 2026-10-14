@@ -106,6 +106,8 @@ let songNowPlaying = 'Starting stream...';
 let songWasPlaying = 'Starting stream...';
 let currentZipIndex = 0;
 let zipRotationTimeout = null;
+let currentPlayingFile = null;
+let songTitleUpdateTimeout = null;
 
 /** Backpressure / overlap protection */
 let isCapturing = false;
@@ -602,13 +604,28 @@ async function ensureFfmpeg() {
       stderrBuffer.push(line);
       if (stderrBuffer.length > STDERR_BUFFER_LINES) stderrBuffer.shift();
 
-      // Skip file-open messages for HLS output
+      // Skip HLS output messages
       if (line.includes('for writing')) return;
 
       // Track current song title from ffmpeg input log
       const songMatch = line.match(/Opening '([^']+?)'/);
-      if (songMatch && songMatch[1].match(/\.(mp3|m4a|aac|wav|flac|ogg)$/i)) {
-        songNowPlaying = path.parse(songMatch[1]).name;
+      if (songMatch) {
+        const fullPath = songMatch[1];
+        if (!fullPath.match(/\.(mp3|m4a|aac|wav|flac|ogg)$/i)) return;
+
+        const fileName = path.parse(fullPath).name;
+
+        // Only update when a *new* file is actually playing, not just pre-opened.
+        if (currentPlayingFile !== fullPath) {
+          currentPlayingFile = fullPath;
+
+          // Wait a short delay to confirm the audio has actually switched
+          // (ffmpeg pre-opens the next file before the current one finishes)
+          clearTimeout(songTitleUpdateTimeout);
+          songTitleUpdateTimeout = setTimeout(() => {
+            songNowPlaying = fileName;
+          }, 300);
+        }
       }
     })
     .on('progress', (p) => {
