@@ -219,6 +219,29 @@ function createAudioInputFile() {
 function generateXMLTV(host) {
   const now = new Date();
   const baseUrl = `http://${host}`;
+
+  // The app rotates ZIPs exactly on the :08 mark of every 10-minute block (00:08, 00:18, 00:28, etc.)
+  function getZipForTime(t) {
+    const mins = t.getHours() * 60 + t.getMinutes();
+    const blocksPassed = Math.floor(mins / 10);
+    const pastEight = (mins % 10) >= 8;
+    const totalRotations = blocksPassed + (pastEight ? 1 : 0);
+
+    const nowMins = now.getHours() * 60 + now.getMinutes();
+    const nowBlocks = Math.floor(nowMins / 10);
+    const nowPastEight = (nowMins % 10) >= 8;
+    const nowTotalRotations = nowBlocks + (nowPastEight ? 1 : 0);
+
+    const diff = totalRotations - nowTotalRotations;
+    let idx = (currentZipIndex + diff) % ZIP_CODE.length;
+    if (idx < 0) idx += ZIP_CODE.length;
+    return ZIP_CODE[idx];
+  }
+
+  // Align the guide start time to the :08 mark of the current 10-minute block
+  const alignedNow = new Date(now);
+  alignedNow.setMinutes((Math.floor(now.getMinutes() / 10) * 10) + 8, 0, 0);
+
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE tv SYSTEM "xmltv.dtd">
 <tv>
@@ -227,16 +250,19 @@ function generateXMLTV(host) {
     <icon src="${baseUrl}/${XMLTV_LOGO}"/>
   </channel>`;
 
-  for (let i = 0; i < 24; i++) {
-    const startTime = new Date(now.getTime() + i * 3600 * 1000);
-    const endTime = new Date(startTime.getTime() + 3600 * 1000);
+  for (let i = 0; i < 144; i++) {
+    const startTime = new Date(alignedNow.getTime() + i * 10 * 60 * 1000);
+    const endTime = new Date(startTime.getTime() + 10 * 60 * 1000);
+    const activeZip = getZipForTime(startTime);
+
     const pad = (n) => String(n).padStart(2, '0');
     const start = `${startTime.getFullYear()}${pad(startTime.getMonth()+1)}${pad(startTime.getDate())}${pad(startTime.getHours())}${pad(startTime.getMinutes())}${pad(startTime.getSeconds())} +0000`;
     const end = `${endTime.getFullYear()}${pad(endTime.getMonth()+1)}${pad(endTime.getDate())}${pad(endTime.getHours())}${pad(endTime.getMinutes())}${pad(endTime.getSeconds())} +0000`;
+
     xml += `
   <programme start="${start}" stop="${end}" channel="WS4000">
-    <title lang="en">Local Weather</title>
-    <desc lang="en">Enjoy your local weather with a touch of nostalgia.</desc>
+    <title lang="en">${activeZip} Weather</title>
+    <desc lang="en">Enjoy your local weather with a touch of nostalgia. Current location: ${activeZip}.</desc>
     <icon src="${baseUrl}/${XMLTV_LOGO}"/>
   </programme>`;
   }
@@ -703,7 +729,7 @@ app.get('/playlist.m3u', (req, res) => {
   const baseUrl = `http://${host}`;
   res.set('Content-Type', 'application/x-mpegURL');
   res.send(`#EXTM3U
-#EXTINF:-1 channel-id="weatherStar4000" tvg-id="weatherStar4000" tvg-channel-no="275" tvc-guide-placeholders="3600" tvc-guide-title="Local Weather" tvc-guide-description="Enjoy your local weather with a touch of nostalgia." tvc-guide-art="${baseUrl}/${XMLTV_LOGO}" tvg-logo="${baseUrl}/${XMLTV_LOGO}",WeatherStar 4000
+#EXTINF:-1 channel-id="weatherStar4000" tvg-id="weatherStar4000" tvg-channel-no="275" tvc-guide-placeholders="600" tvc-guide-title="Local Weather (${ZIP_CODE[currentZipIndex]})" tvc-guide-description="Enjoy your local weather with a touch of nostalgia. Current location: ${ZIP_CODE[currentZipIndex]}." tvc-guide-art="${baseUrl}/${XMLTV_LOGO}" tvg-logo="${baseUrl}/${XMLTV_LOGO}",WeatherStar 4000
 ${baseUrl}/stream/stream.m3u8
 `);
 });
