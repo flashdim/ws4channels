@@ -595,7 +595,7 @@ async function ensureFfmpeg() {
     .inputOptions(['-f concat', '-safe 0', '-stream_loop -1', '-loglevel debug'])
     .complexFilter([
       `[0:v]scale=${VIEW_DIMENSIONS.width}:${VIEW_DIMENSIONS.height}[v]`,
-      '[1:a]aresample=async=1:48000,volume=0.5[a]',
+      '[1:a]aresample=48000,volume=0.5[a]',
     ])
     .outputOptions([
       '-map [v]', '-map [a]',
