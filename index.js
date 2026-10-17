@@ -773,7 +773,7 @@ app.use('/stream', async (req, res, next) => {
     ensureFfmpeg();
   }
 
-  // Reset grace timer on every request
+  // Reset grace timer on every request (not just when waiting)
   clearTimeout(streamGraceTimer);
   streamGraceTimer = setTimeout(async () => {
     streamActive = false;
@@ -781,21 +781,27 @@ app.use('/stream', async (req, res, next) => {
     await stopFfmpeg();
   }, STREAM_GRACE_PERIOD_S * 1000);
 
-  // Wait for stream readiness
-  let attempts = 0;
-  const maxAttempts = 30;
-  while (!isStreamReady && attempts < maxAttempts) {
+  // Check if the playlist file already exists (serve immediately if so)
+  if (fs.existsSync(HLS_FILE)) {
+    return res.sendFile(HLS_FILE);
+  }
+
+  // Wait for FFmpeg to create the playlist file (not just the 'start' event)
+  const maxWaitMs = 30000;
+  const start = Date.now();
+
+  while (!fs.existsSync(HLS_FILE) && Date.now() - start < maxWaitMs) {
     await sleep(500);
-    attempts++;
-    if (attempts % 5 === 0) logTS(`Warming up... (${attempts * 500}ms)`);
   }
 
-  if (!isStreamReady) {
-    logTS('❌ Timeout waiting for stream readiness');
-    return res.status(503).send('Stream is warming up. Please retry.');
+  if (fs.existsSync(HLS_FILE)) {
+    return res.sendFile(HLS_FILE);
   }
 
-  next();
+  // Timed out waiting for the playlist
+  logTS('❌ Timeout waiting for HLS playlist');
+  res.setHeader('Retry-After', '5');
+  return res.status(503).send('Stream is warming up. Please retry.');
 });
 
 app.use('/stream', express.static(OUTPUT_DIR));
