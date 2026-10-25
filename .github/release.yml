@@ -12,3 +12,6 @@ changelog:
     - title: 🪲🔨 Bug Fixes
       labels:
         - bug
+    - title: ⚠️ Security and Dependencies
+      labels:
+        - dependencies
