@@ -474,9 +474,14 @@ async function startBrowser(reason = 'initial startup') {
       }
 
       // Enable kiosk mode
-      const kioskCheckbox = await page.waitForSelector('#settings-kiosk-checkbox');
-      const kioskChecked = await kioskCheckbox.evaluate(el => el.checked);
-      if (!kioskChecked) await kioskCheckbox.click();
+      try {
+        const kioskCheckbox = await page.waitForSelector('#settings-kiosk-checkbox', { timeout: 10000 }); // set the checkbox
+        // click via the DOM rather than ElementHandle.click(), which dispatches a mouse event at the
+        // element's screen coordinates and silently misses if the layout shifts or something overlays it
+        await kioskCheckbox.evaluate((el) => { if (!el.checked) el.click(); });
+      } catch (err) {
+        logTS(`Could not set kiosk mode (continuing anyway): ${err.message}`);
+      }
     }
 
     await page.setViewport({ ...VIEW_DIMENSIONS });
